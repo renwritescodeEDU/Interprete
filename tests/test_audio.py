@@ -38,12 +38,13 @@ def test_audio_capture_pushes_to_queue():
         mock_read.call_count = 0
         mock_stream.read.side_effect = mock_read
 
-        start_audio_capture(test_queue)
+        control_queue = multiprocessing.Queue()
+        start_audio_capture(test_queue, control_queue)
 
         item = test_queue.get(timeout=2)
         assert isinstance(item, tuple)
-        assert len(item) == 2
-        audio_array, sample_rate = item
+        assert len(item) == 3
+        audio_array, sample_rate, is_final = item
         assert isinstance(audio_array, np.ndarray)
         assert sample_rate == 16000
         

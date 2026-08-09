@@ -44,19 +44,14 @@ def test_translator_processes_queue(mock_mps_is_available, mock_pipeline):
     start_translator(translation_queue, ui_queue)
 
     item1 = ui_queue.get(timeout=2)
-    assert isinstance(item1, tuple)
-    assert len(item1) == 2
-    original_text1, translated_text1 = item1
-    assert original_text1 == "Hello"
-    assert translated_text1 == "Hola"
-    
+    assert isinstance(item1, dict)
+    assert item1["original"] == "Hello"
+    assert item1["translated"] == "Hola"
+
     item2 = ui_queue.get(timeout=2)
-    assert isinstance(item2, tuple)
-    assert len(item2) == 2
-    original_text2, translated_text2 = item2
-    assert original_text2 == "Hola"
-    assert translated_text2 == "Hello"
+    assert isinstance(item2, dict)
+    assert item2["original"] == "Hola"
+    assert item2["translated"] == "Hello"
     
     mock_en_es.assert_called_once_with("Hello")
     mock_es_en.assert_called_once_with("Hola")
-

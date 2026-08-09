@@ -2,102 +2,150 @@ import multiprocessing
 import queue
 import sys
 from datetime import datetime
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QGuiApplication
-from PyQt6.QtWidgets import QApplication, QLabel, QWidget, QVBoxLayout, QPushButton, QHBoxLayout
-
+from PyQt6.QtCore import Qt, QTimer, QPoint
+from PyQt6.QtGui import QGuiApplication, QMouseEvent
+from PyQt6.QtWidgets import (
+    QApplication, QLabel, QWidget, QVBoxLayout, QHBoxLayout, 
+    QPushButton, QScrollArea, QSizePolicy
+)
 
 class OverlayWindow(QWidget):
-    def __init__(self, ui_queue: multiprocessing.Queue, log_path: str):
+    def __init__(self, ui_queue: multiprocessing.Queue, control_queue: multiprocessing.Queue, log_path: str):
         super().__init__()
         self.ui_queue = ui_queue
+        self.control_queue = control_queue
         self.log_path = log_path
-        self.message_widgets = []
+        self._drag_pos = QPoint()
         
-        # Window configuration for Overlay
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint |
-            Qt.WindowType.WindowTransparentForInput
+            Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
-        self.layout = QVBoxLayout()
-        self.layout.setAlignment(Qt.AlignmentFlag.AlignBottom)
-        self.setLayout(self.layout)
+        self.main_layout = QVBoxLayout()
+        self.setLayout(self.main_layout)
+        self.setFixedSize(600, 500)
+        
+        # Background Container
+        self.container = QWidget()
+        self.container.setObjectName("MainContainer")
+        self.container.setStyleSheet("""
+            QWidget#MainContainer {
+                background-color: rgba(0, 0, 0, 200);
+                border-radius: 12px;
+                border: 1px solid #333333;
+            }
+        """)
+        container_layout = QVBoxLayout()
+        self.container.setLayout(container_layout)
+        self.main_layout.addWidget(self.container)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Header (Status + Translate Button)
+        header_layout = QHBoxLayout()
+        self.status_label = QLabel("🔴 Escuchando...")
+        self.status_label.setStyleSheet("color: white; font-weight: bold;")
+        self.translate_btn = QPushButton("Traducir")
+        self.translate_btn.setStyleSheet("background-color: #4ADE80; color: black; font-weight: bold; border-radius: 5px; padding: 5px 15px;")
+        self.translate_btn.clicked.connect(self.on_translate_clicked)
+        
+        header_layout.addWidget(self.status_label)
+        header_layout.addStretch()
+        header_layout.addWidget(self.translate_btn)
+        container_layout.addLayout(header_layout)
+        
+        # History Scroll Area
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setStyleSheet("background: transparent; border: none;")
+        self.history_widget = QWidget()
+        self.history_widget.setStyleSheet("background: transparent;")
+        self.history_layout = QVBoxLayout()
+        self.history_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.history_widget.setLayout(self.history_layout)
+        self.scroll_area.setWidget(self.history_widget)
+        container_layout.addWidget(self.scroll_area)
+        
+        # Current Message Area (Bottom)
+        self.current_label = QLabel("")
+        self.current_label.setWordWrap(True)
+        self.current_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.current_label.setStyleSheet("color: white; font-size: 24px; padding: 10px; background-color: rgba(255, 255, 255, 10); border-radius: 8px;")
+        container_layout.addWidget(self.current_label)
         
         self.setStyleSheet("""
             QWidget#Bubble {
-                background-color: rgba(0, 0, 0, 180);
-                border-radius: 12px;
-                margin: 2px;
+                background-color: rgba(255, 255, 255, 20);
+                border-radius: 8px;
+                margin-bottom: 5px;
             }
-            QLabel#original {
-                background-color: transparent;
-                color: #A0A0A0;  /* Light gray */
-                font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-                font-size: 18px;
-                padding: 5px 10px 0px 10px;
-            }
-            QLabel#translated {
-                background-color: transparent;
-                color: #4ADE80;  /* Light green */
-                font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-                font-weight: bold;
-                font-size: 24px;
-                padding: 0px 10px 10px 10px;
+            QLabel.history_text {
+                color: #D0D0D0;
+                font-size: 16px;
+                padding: 5px;
             }
         """)
         
-        # Dynamic resizing bounds
-        self.setFixedWidth(800)
         self._center_on_screen()
         
-        # Polling timer
         self.poll_timer = QTimer(self)
         self.poll_timer.timeout.connect(self.poll_queue)
         self.poll_timer.start(100)
+
+    # Dragging logic
+    def mousePressEvent(self, event: QMouseEvent):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        if event.buttons() == Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
 
     def _center_on_screen(self):
         screen = QGuiApplication.primaryScreen()
         if screen:
             geom = screen.availableGeometry()
             x = geom.x() + (geom.width() - self.width()) // 2
-            # Offset 50 pixels from the bottom
             y = geom.y() + geom.height() - self.height() - 50 
             self.move(x, y)
 
-    def _append_message(self, original: str, translated: str):
+    def on_translate_clicked(self):
+        self.status_label.setText("⏳ Traduciendo...")
+        self.translate_btn.setEnabled(False)
+        try:
+            self.control_queue.put("FINISH", block=False)
+        except:
+            pass
+
+    def _add_to_history(self, original: str, translated: str):
         bubble = QWidget()
         bubble.setObjectName("Bubble")
         bubble_layout = QVBoxLayout()
-        bubble_layout.setContentsMargins(0, 0, 0, 0)
+        bubble_layout.setContentsMargins(5, 5, 5, 5)
         bubble.setLayout(bubble_layout)
         
-        lbl_orig = QLabel(original)
-        lbl_orig.setObjectName("original")
+        lbl_orig = QLabel(f"<b>Ori:</b> {original}")
+        lbl_orig.setProperty("class", "history_text")
         lbl_orig.setWordWrap(True)
-        lbl_orig.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_orig.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         
-        lbl_trans = QLabel(translated)
-        lbl_trans.setObjectName("translated")
+        lbl_trans = QLabel(f"<b>Tr:</b> <span style='color: #4ADE80'>{translated}</span>")
+        lbl_trans.setProperty("class", "history_text")
         lbl_trans.setWordWrap(True)
-        lbl_trans.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_trans.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         
         bubble_layout.addWidget(lbl_orig)
         bubble_layout.addWidget(lbl_trans)
         
-        self.layout.addWidget(bubble)
-        self.message_widgets.append(bubble)
+        self.history_layout.addWidget(bubble)
         
-        # Limit to 4 visual messages
-        if len(self.message_widgets) > 4:
-            oldest = self.message_widgets.pop(0)
-            self.layout.removeWidget(oldest)
-            oldest.deleteLater()
-            
-        self.adjustSize()
-        self._center_on_screen()
+        # Scroll to bottom
+        QTimer.singleShot(50, lambda: self.scroll_area.verticalScrollBar().setValue(
+            self.scroll_area.verticalScrollBar().maximum()
+        ))
 
     def _log_message(self, original: str, translated: str):
         if not self.log_path:
@@ -113,22 +161,36 @@ class OverlayWindow(QWidget):
             while True:
                 item = self.ui_queue.get_nowait()
                 if item is None:
-                    # Poison pill received from Stop button
                     self.close()
                     return
                 
-                original, translated = item
-                self._append_message(original, translated)
-                self._log_message(original, translated)
+                if isinstance(item, dict):
+                    msg_type = item.get("type")
+                    if msg_type == "partial":
+                        self.current_label.setText(item.get("text", ""))
+                    elif msg_type == "final":
+                        # Clear it while we wait for translation
+                        self.current_label.setText(f"<i>{item.get('text', '')}</i>")
+                    elif msg_type == "translation":
+                        original = item.get("original", "")
+                        translated = item.get("translated", "")
+                        
+                        self._add_to_history(original, translated)
+                        self._log_message(original, translated)
+                        
+                        self.current_label.setText("")
+                        self.status_label.setText("🔴 Escuchando...")
+                        self.translate_btn.setEnabled(True)
                 
         except queue.Empty:
             pass
 
 
 class ControlPanelWindow(QWidget):
-    def __init__(self, ui_queue: multiprocessing.Queue, start_callback, stop_callback, log_path: str):
+    def __init__(self, ui_queue: multiprocessing.Queue, control_queue: multiprocessing.Queue, start_callback, stop_callback, log_path: str):
         super().__init__()
         self.ui_queue = ui_queue
+        self.control_queue = control_queue
         self.start_callback = start_callback
         self.stop_callback = stop_callback
         self.log_path = log_path
@@ -158,7 +220,7 @@ class ControlPanelWindow(QWidget):
 
     def start_interpreter(self):
         self.start_callback()
-        self.overlay = OverlayWindow(self.ui_queue, self.log_path)
+        self.overlay = OverlayWindow(self.ui_queue, self.control_queue, self.log_path)
         self.overlay.show()
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
@@ -170,7 +232,7 @@ class ControlPanelWindow(QWidget):
             self.overlay.close()
             self.overlay = None
         
-        # Clear queue
+        # Clear queues
         while not self.ui_queue.empty():
             try:
                 self.ui_queue.get_nowait()
@@ -186,8 +248,8 @@ class ControlPanelWindow(QWidget):
         event.accept()
 
 
-def run_ui(ui_queue: multiprocessing.Queue, start_callback, stop_callback, log_path: str = None):
+def run_ui(ui_queue: multiprocessing.Queue, control_queue: multiprocessing.Queue, start_callback, stop_callback, log_path: str = None):
     app = QApplication(sys.argv)
-    window = ControlPanelWindow(ui_queue, start_callback, stop_callback, log_path)
+    window = ControlPanelWindow(ui_queue, control_queue, start_callback, stop_callback, log_path)
     window.show()
     sys.exit(app.exec())

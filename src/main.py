@@ -20,6 +20,7 @@ class Orchestrator:
         self.asr_queue = multiprocessing.Queue(maxsize=5)
         self.translation_queue = multiprocessing.Queue(maxsize=5)
         self.ui_queue = multiprocessing.Queue()
+        self.control_queue = multiprocessing.Queue()
         
         os.makedirs("logs", exist_ok=True)
         self.log_path = os.path.join("logs", f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
@@ -27,7 +28,7 @@ class Orchestrator:
     def start_processes(self):
         print("Starting background processes...")
         # Clear queues if restarting
-        for q in [self.asr_queue, self.translation_queue, self.ui_queue]:
+        for q in [self.asr_queue, self.translation_queue, self.ui_queue, self.control_queue]:
             while not q.empty():
                 try:
                     q.get_nowait()
@@ -35,10 +36,10 @@ class Orchestrator:
                     pass
         
         self.audio_process = multiprocessing.Process(
-            target=start_audio_capture, args=(self.asr_queue,), daemon=True
+            target=start_audio_capture, args=(self.asr_queue, self.control_queue), daemon=True
         )
         self.asr_process = multiprocessing.Process(
-            target=start_transcriber, args=(self.asr_queue, self.translation_queue), daemon=True
+            target=start_transcriber, args=(self.asr_queue, self.translation_queue, self.ui_queue), daemon=True
         )
         self.translator_process = multiprocessing.Process(
             target=start_translator, args=(self.translation_queue, self.ui_queue), daemon=True
@@ -77,7 +78,7 @@ def main():
         multiprocessing.set_start_method('spawn', force=True)
 
     orchestrator = Orchestrator()
-    run_ui(orchestrator.ui_queue, orchestrator.start_processes, orchestrator.stop_processes, orchestrator.log_path)
+    run_ui(orchestrator.ui_queue, orchestrator.control_queue, orchestrator.start_processes, orchestrator.stop_processes, orchestrator.log_path)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ def test_ui_callable():
 def test_run_ui(mock_sys, mock_window_cls, mock_app_cls):
     """Verify run_ui initializes QApplication and ControlPanelWindow properly."""
     ui_queue = multiprocessing.Queue()
+    control_queue = multiprocessing.Queue()
     mock_app = MagicMock()
     mock_app_cls.return_value = mock_app
     
@@ -19,10 +20,10 @@ def test_run_ui(mock_sys, mock_window_cls, mock_app_cls):
     
     start_cb = MagicMock()
     stop_cb = MagicMock()
-    run_ui(ui_queue, start_cb, stop_cb)
+    run_ui(ui_queue, control_queue, start_cb, stop_cb)
     
     mock_app_cls.assert_called_once()
-    mock_window_cls.assert_called_once_with(ui_queue, start_cb, stop_cb, None)
+    mock_window_cls.assert_called_once_with(ui_queue, control_queue, start_cb, stop_cb, None)
     mock_window.show.assert_called_once()
     mock_app.exec.assert_called_once()
     mock_sys.exit.assert_called_once()

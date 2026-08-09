@@ -38,7 +38,14 @@ def start_translator(
                 result = es_to_en(text)
                 translated_text = result[0]['translation_text']
                 
-            ui_queue.put((text, translated_text))
+            try:
+                ui_queue.put({
+                    "type": "translation",
+                    "original": text,
+                    "translated": translated_text
+                }, block=False)
+            except queue.Full:
+                pass
             
         except queue.Empty:
             continue

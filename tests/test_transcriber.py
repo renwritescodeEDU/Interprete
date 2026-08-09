@@ -28,13 +28,14 @@ def test_transcriber_processes_queue(mock_whisper_model_cls):
 
     asr_queue = multiprocessing.Queue()
     translation_queue = multiprocessing.Queue()
+    ui_queue = multiprocessing.Queue()
 
     dummy_audio = np.zeros(1024, dtype=np.float32)
     sample_rate = 16000
-    asr_queue.put((dummy_audio, sample_rate))
+    asr_queue.put((dummy_audio, sample_rate, True))
     asr_queue.put(None) # Poison pill to terminate loop
 
-    start_transcriber(asr_queue, translation_queue)
+    start_transcriber(asr_queue, translation_queue, ui_queue)
 
     item = translation_queue.get(timeout=2)
     assert isinstance(item, tuple)
