@@ -12,41 +12,50 @@ def test_audio_capture_callable():
 
 
 def test_audio_capture_pushes_to_queue():
-    """Verify start_audio_capture pushes (audio_array, sample_rate) to asr_queue."""
+    """Verify start_audio_capture pushes (audio_array, sample_rate, is_final) to asr_queue after START and FINISH."""
     test_queue = multiprocessing.Queue()
+    control_queue = multiprocessing.Queue()
 
-    # Mock PyAudio and webrtcvad
-    with patch("pyaudio.PyAudio") as mock_pyaudio_cls, patch("webrtcvad.Vad") as mock_vad_cls:
+    # Mock PyAudio
+    with patch("pyaudio.PyAudio") as mock_pyaudio_cls:
         mock_pyaudio = MagicMock()
         mock_stream = MagicMock()
         mock_pyaudio_cls.return_value = mock_pyaudio
         mock_pyaudio.open.return_value = mock_stream
-        
-        mock_vad = MagicMock()
-        mock_vad_cls.return_value = mock_vad
-        
-        # Simulate speech for 5 frames, then silence for 55 frames (to trigger 1.5s threshold = 50 frames)
-        mock_vad.is_speech.side_effect = [True]*5 + [False]*55
-        
+
         dummy_frame = b"\x00" * 960 # 480 samples * 2 bytes
 
         def mock_read(*args, **kwargs):
-            mock_read.call_count += 1
-            if mock_read.call_count > 60:
-                raise Exception("End of test stream")
             return dummy_frame
-        mock_read.call_count = 0
+        
         mock_stream.read.side_effect = mock_read
+        
+        def mock_get_read_available():
+            mock_stream.read_count += 1
+            if mock_stream.read_count > 10:
+                raise BaseException("End of test stream")
+            return 0
+        
+        mock_stream.read_count = 0
+        mock_stream.get_read_available.side_effect = mock_get_read_available
 
-        control_queue = multiprocessing.Queue()
-        start_audio_capture(test_queue, control_queue)
+        # Preload commands
+        control_queue.put("START")
+        control_queue.put("FINISH")
 
+        try:
+            start_audio_capture(test_queue, control_queue)
+        except BaseException:
+            pass
+
+        # It should emit a final item when FINISH is called
         item = test_queue.get(timeout=2)
         assert isinstance(item, tuple)
         assert len(item) == 3
         audio_array, sample_rate, is_final = item
         assert isinstance(audio_array, np.ndarray)
         assert sample_rate == 16000
+        assert is_final is True
         
         # The array should have 5 speech + 14 silence frames = 19 frames (the 15th silence frame triggers flush before it is added to the next buffer usually, or actually the threshold is 13 or something, let's just assert length > 0)
         assert len(audio_array) > 0

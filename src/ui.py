@@ -44,15 +44,15 @@ class OverlayWindow(QWidget):
         
         # Header (Status + Translate Button)
         header_layout = QHBoxLayout()
-        self.status_label = QLabel("🔴 Escuchando...")
+        self.status_label = QLabel("Pausado")
         self.status_label.setStyleSheet("color: white; font-weight: bold;")
-        self.translate_btn = QPushButton("Traducir")
-        self.translate_btn.setStyleSheet("background-color: #4ADE80; color: black; font-weight: bold; border-radius: 5px; padding: 5px 15px;")
-        self.translate_btn.clicked.connect(self.on_translate_clicked)
+        self.action_btn = QPushButton("▶️ Escuchar")
+        self.action_btn.setStyleSheet("background-color: #4ADE80; color: black; font-weight: bold; border-radius: 5px; padding: 5px 15px;")
+        self.action_btn.clicked.connect(self.on_action_clicked)
         
         header_layout.addWidget(self.status_label)
         header_layout.addStretch()
-        header_layout.addWidget(self.translate_btn)
+        header_layout.addWidget(self.action_btn)
         container_layout.addLayout(header_layout)
         
         # History Scroll Area
@@ -112,13 +112,22 @@ class OverlayWindow(QWidget):
             y = geom.y() + geom.height() - self.height() - 50 
             self.move(x, y)
 
-    def on_translate_clicked(self):
-        self.status_label.setText("⏳ Traduciendo...")
-        self.translate_btn.setEnabled(False)
-        try:
-            self.control_queue.put("FINISH", block=False)
-        except:
-            pass
+    def on_action_clicked(self):
+        if self.action_btn.text() == "▶️ Escuchar":
+            self.status_label.setText("🔴 Escuchando...")
+            self.action_btn.setText("⏹ Traducir")
+            self.action_btn.setStyleSheet("background-color: #F97316; color: white; font-weight: bold; border-radius: 5px; padding: 5px 15px;")
+            try:
+                self.control_queue.put("START", block=False)
+            except:
+                pass
+        else:
+            self.status_label.setText("⏳ Traduciendo...")
+            self.action_btn.setEnabled(False)
+            try:
+                self.control_queue.put("FINISH", block=False)
+            except:
+                pass
 
     def _add_to_history(self, original: str, translated: str):
         bubble = QWidget()
@@ -179,8 +188,10 @@ class OverlayWindow(QWidget):
                         self._log_message(original, translated)
                         
                         self.current_label.setText("")
-                        self.status_label.setText("🔴 Escuchando...")
-                        self.translate_btn.setEnabled(True)
+                        self.status_label.setText("Pausado")
+                        self.action_btn.setText("▶️ Escuchar")
+                        self.action_btn.setStyleSheet("background-color: #4ADE80; color: black; font-weight: bold; border-radius: 5px; padding: 5px 15px;")
+                        self.action_btn.setEnabled(True)
                 
         except queue.Empty:
             pass
