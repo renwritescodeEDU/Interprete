@@ -1,0 +1,7 @@
+pyaudio>=0.2.14
+PyQt6>=6.7.0
+faster-whisper>=1.0.0
+transformers>=4.40.0
+torch>=2.2.2
+torchaudio>=2.2.2
+numpy>=1.24.0
