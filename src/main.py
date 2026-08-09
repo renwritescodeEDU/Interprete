@@ -3,6 +3,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import multiprocessing
+from datetime import datetime
 from src.audio import start_audio_capture
 from src.transcriber import start_transcriber
 from src.translator import start_translator
@@ -15,9 +16,13 @@ class Orchestrator:
         self.asr_process = None
         self.translator_process = None
         
-        self.asr_queue = multiprocessing.Queue()
-        self.translation_queue = multiprocessing.Queue()
+        # Protect against queue desync lag
+        self.asr_queue = multiprocessing.Queue(maxsize=5)
+        self.translation_queue = multiprocessing.Queue(maxsize=5)
         self.ui_queue = multiprocessing.Queue()
+        
+        os.makedirs("logs", exist_ok=True)
+        self.log_path = os.path.join("logs", f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
 
     def start_processes(self):
         print("Starting background processes...")
@@ -72,7 +77,7 @@ def main():
         multiprocessing.set_start_method('spawn', force=True)
 
     orchestrator = Orchestrator()
-    run_ui(orchestrator.ui_queue, orchestrator.start_processes, orchestrator.stop_processes)
+    run_ui(orchestrator.ui_queue, orchestrator.start_processes, orchestrator.stop_processes, orchestrator.log_path)
 
 
 if __name__ == "__main__":

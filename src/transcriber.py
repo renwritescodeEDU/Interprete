@@ -28,7 +28,10 @@ def start_transcriber(
                 if info.language in ["en", "es"]:
                     text = "".join(segment.text for segment in segments).strip()
                     if text:
-                        translation_queue.put((text, info.language))
+                        try:
+                            translation_queue.put((text, info.language), block=False)
+                        except queue.Full:
+                            pass
         except queue.Empty:
             continue
         except Exception as e:

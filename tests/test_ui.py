@@ -22,7 +22,7 @@ def test_run_ui(mock_sys, mock_window_cls, mock_app_cls):
     run_ui(ui_queue, start_cb, stop_cb)
     
     mock_app_cls.assert_called_once()
-    mock_window_cls.assert_called_once_with(ui_queue, start_cb, stop_cb)
+    mock_window_cls.assert_called_once_with(ui_queue, start_cb, stop_cb, None)
     mock_window.show.assert_called_once()
     mock_app.exec.assert_called_once()
     mock_sys.exit.assert_called_once()
