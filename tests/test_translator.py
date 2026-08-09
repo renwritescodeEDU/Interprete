@@ -24,7 +24,7 @@ def test_translator_processes_queue(mock_mps_is_available, mock_pipeline):
     mock_es_en = MagicMock()
     mock_es_en.return_value = [{'translation_text': 'Hello'}]
     
-    def side_effect_pipeline(task, model, device):
+    def side_effect_pipeline(task, model, device, **kwargs):
         if "en-es" in model:
             return mock_en_es
         return mock_es_en

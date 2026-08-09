@@ -1,41 +1,78 @@
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import multiprocessing
-import signal
 from src.audio import start_audio_capture
 from src.transcriber import start_transcriber
 from src.translator import start_translator
 from src.ui import run_ui
 
 
+class Orchestrator:
+    def __init__(self):
+        self.audio_process = None
+        self.asr_process = None
+        self.translator_process = None
+        
+        self.asr_queue = multiprocessing.Queue()
+        self.translation_queue = multiprocessing.Queue()
+        self.ui_queue = multiprocessing.Queue()
+
+    def start_processes(self):
+        print("Starting background processes...")
+        # Clear queues if restarting
+        for q in [self.asr_queue, self.translation_queue, self.ui_queue]:
+            while not q.empty():
+                try:
+                    q.get_nowait()
+                except:
+                    pass
+        
+        self.audio_process = multiprocessing.Process(
+            target=start_audio_capture, args=(self.asr_queue,), daemon=True
+        )
+        self.asr_process = multiprocessing.Process(
+            target=start_transcriber, args=(self.asr_queue, self.translation_queue), daemon=True
+        )
+        self.translator_process = multiprocessing.Process(
+            target=start_translator, args=(self.translation_queue, self.ui_queue), daemon=True
+        )
+
+        self.audio_process.start()
+        self.asr_process.start()
+        self.translator_process.start()
+        print("Background processes running.")
+
+    def stop_processes(self):
+        print("Stopping background processes...")
+        # Send poison pills
+        self.asr_queue.put(None)
+        self.translation_queue.put(None)
+        
+        if self.audio_process and self.audio_process.is_alive():
+            self.audio_process.terminate()
+            self.audio_process.join(timeout=1)
+            
+        if self.asr_process and self.asr_process.is_alive():
+            self.asr_process.join(timeout=2)
+            if self.asr_process.is_alive():
+                self.asr_process.terminate()
+                
+        if self.translator_process and self.translator_process.is_alive():
+            self.translator_process.join(timeout=2)
+            if self.translator_process.is_alive():
+                self.translator_process.terminate()
+        
+        print("Background processes stopped.")
+
+
 def main():
-    # macOS requires 'spawn' to avoid fork-safety issues with CoreFoundation/AppKit and PyTorch.
     if multiprocessing.get_start_method(allow_none=True) != 'spawn':
         multiprocessing.set_start_method('spawn', force=True)
 
-    asr_queue = multiprocessing.Queue()
-    translation_queue = multiprocessing.Queue()
-    ui_queue = multiprocessing.Queue()
-
-    audio_process = multiprocessing.Process(
-        target=start_audio_capture, args=(asr_queue,), daemon=True
-    )
-    asr_process = multiprocessing.Process(
-        target=start_transcriber, args=(asr_queue, translation_queue), daemon=True
-    )
-    translator_process = multiprocessing.Process(
-        target=start_translator, args=(translation_queue, ui_queue), daemon=True
-    )
-
-    print("Starting background processes...")
-    audio_process.start()
-    asr_process.start()
-    translator_process.start()
-
-    print("Background processes running. Launching UI. Press Ctrl+C in terminal to exit.")
-    # Intercept SIGINT so PyQt handles Ctrl+C gracefully
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
-
-    # Launch GUI on the main thread
-    run_ui(ui_queue)
+    orchestrator = Orchestrator()
+    run_ui(orchestrator.ui_queue, orchestrator.start_processes, orchestrator.stop_processes)
 
 
 if __name__ == "__main__":

@@ -14,8 +14,8 @@ def start_translator(
     """
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     
-    en_to_es = pipeline("translation", model="Helsinki-NLP/opus-mt-en-es", device=device)
-    es_to_en = pipeline("translation", model="Helsinki-NLP/opus-mt-es-en", device=device)
+    en_to_es = pipeline("translation", model="Helsinki-NLP/opus-mt-en-es", device=device, max_new_tokens=100, repetition_penalty=1.2)
+    es_to_en = pipeline("translation", model="Helsinki-NLP/opus-mt-es-en", device=device, max_new_tokens=100, repetition_penalty=1.2)
 
     while True:
         try:
@@ -27,7 +27,7 @@ def start_translator(
                 continue
 
             text, lang = item
-            if not text:
+            if not text or len(text.strip()) < 3:
                 continue
 
             translated_text = text

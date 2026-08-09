@@ -3,7 +3,7 @@ import queue
 import sys
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QGuiApplication
-from PyQt6.QtWidgets import QApplication, QLabel, QWidget, QVBoxLayout
+from PyQt6.QtWidgets import QApplication, QLabel, QWidget, QVBoxLayout, QPushButton, QHBoxLayout
 
 
 class OverlayWindow(QWidget):
@@ -25,7 +25,7 @@ class OverlayWindow(QWidget):
         
         self.setStyleSheet("""
             QWidget {
-                background-color: rgba(15, 15, 15, 200);
+                background-color: rgba(15, 15, 15, 220);
                 border-radius: 12px;
             }
             QLabel {
@@ -81,8 +81,8 @@ class OverlayWindow(QWidget):
             while True:
                 item = self.ui_queue.get_nowait()
                 if item is None:
-                    # Poison pill received
-                    QApplication.quit()
+                    # Poison pill received from Stop button
+                    self.close()
                     return
                 
                 original, translated = item
@@ -99,8 +99,68 @@ class OverlayWindow(QWidget):
         self.translated_label.setText("")
 
 
-def run_ui(ui_queue: multiprocessing.Queue):
+class ControlPanelWindow(QWidget):
+    def __init__(self, ui_queue: multiprocessing.Queue, start_callback, stop_callback):
+        super().__init__()
+        self.ui_queue = ui_queue
+        self.start_callback = start_callback
+        self.stop_callback = stop_callback
+        self.overlay = None
+
+        self.setWindowTitle("Interprete - Control Panel")
+        self.setFixedSize(300, 150)
+        
+        self.layout = QVBoxLayout()
+        self.setLayout(self.layout)
+        
+        self.status_label = QLabel("Status: Idle")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.layout.addWidget(self.status_label)
+        
+        btn_layout = QHBoxLayout()
+        self.start_btn = QPushButton("Start Interpreter")
+        self.start_btn.clicked.connect(self.start_interpreter)
+        
+        self.stop_btn = QPushButton("Stop Interpreter")
+        self.stop_btn.clicked.connect(self.stop_interpreter)
+        self.stop_btn.setEnabled(False)
+        
+        btn_layout.addWidget(self.start_btn)
+        btn_layout.addWidget(self.stop_btn)
+        self.layout.addLayout(btn_layout)
+
+    def start_interpreter(self):
+        self.start_callback()
+        self.overlay = OverlayWindow(self.ui_queue)
+        self.overlay.show()
+        self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.status_label.setText("Status: Running")
+
+    def stop_interpreter(self):
+        self.stop_callback()
+        if self.overlay:
+            self.overlay.close()
+            self.overlay = None
+        
+        # Clear queue
+        while not self.ui_queue.empty():
+            try:
+                self.ui_queue.get_nowait()
+            except:
+                break
+
+        self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self.status_label.setText("Status: Idle")
+        
+    def closeEvent(self, event):
+        self.stop_interpreter()
+        event.accept()
+
+
+def run_ui(ui_queue: multiprocessing.Queue, start_callback, stop_callback):
     app = QApplication(sys.argv)
-    window = OverlayWindow(ui_queue)
+    window = ControlPanelWindow(ui_queue, start_callback, stop_callback)
     window.show()
     sys.exit(app.exec())

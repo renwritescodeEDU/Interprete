@@ -25,14 +25,14 @@ def test_audio_capture_pushes_to_queue():
         mock_vad = MagicMock()
         mock_vad_cls.return_value = mock_vad
         
-        # Simulate speech for 5 frames, then silence for 15 frames (to trigger threshold)
-        mock_vad.is_speech.side_effect = [True]*5 + [False]*15
+        # Simulate speech for 5 frames, then silence for 55 frames (to trigger 1.5s threshold = 50 frames)
+        mock_vad.is_speech.side_effect = [True]*5 + [False]*55
         
         dummy_frame = b"\x00" * 960 # 480 samples * 2 bytes
-        
+
         def mock_read(*args, **kwargs):
             mock_read.call_count += 1
-            if mock_read.call_count > 20:
+            if mock_read.call_count > 60:
                 raise Exception("End of test stream")
             return dummy_frame
         mock_read.call_count = 0

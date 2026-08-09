@@ -26,8 +26,9 @@ def start_audio_capture(asr_queue: multiprocessing.Queue):
     vad = webrtcvad.Vad(3)
     frames = []
     silence_frames = 0
-    max_frames = int((5.0 * RATE) / CHUNK)  # 5 seconds
-    silence_threshold = int((0.4 * RATE) / CHUNK)  # 400ms
+    max_frames = int((15.0 * RATE) / CHUNK)  # 15 seconds
+    silence_threshold = int((1.5 * RATE) / CHUNK)  # 1500ms
+    min_frames = int((0.5 * RATE) / CHUNK)  # 0.5s minimum to discard noise
 
     try:
         while True:
@@ -46,14 +47,15 @@ def start_audio_capture(asr_queue: multiprocessing.Queue):
             # Flush when silence threshold is met or max duration reached
             if len(frames) > 0:
                 if silence_frames >= silence_threshold or len(frames) >= max_frames:
-                    audio_bytes = b"".join(frames)
-                    # Convert 16-bit PCM to float32
-                    audio_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-                    
-                    try:
-                        asr_queue.put((audio_array, RATE), block=False)
-                    except queue.Full:
-                        pass
+                    if len(frames) > min_frames:
+                        audio_bytes = b"".join(frames)
+                        # Convert 16-bit PCM to float32
+                        audio_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+                        
+                        try:
+                            asr_queue.put((audio_array, RATE), block=False)
+                        except queue.Full:
+                            pass
                     
                     frames = []
                     silence_frames = 0
