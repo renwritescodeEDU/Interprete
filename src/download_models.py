@@ -1,4 +1,3 @@
-import os
 from transformers import pipeline
 
 def download_models():

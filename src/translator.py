@@ -14,8 +14,14 @@ def start_translator(
     """
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     
-    en_to_es = pipeline("translation", model="Helsinki-NLP/opus-mt-en-es", device=device, max_new_tokens=100, repetition_penalty=1.2)
-    es_to_en = pipeline("translation", model="Helsinki-NLP/opus-mt-es-en", device=device, max_new_tokens=100, repetition_penalty=1.2)
+    en_to_es = pipeline("translation", model="Helsinki-NLP/opus-mt-en-es", device=device, max_length=512, truncation=True)
+    es_to_en = pipeline("translation", model="Helsinki-NLP/opus-mt-es-en", device=device, max_length=512, truncation=True)
+
+    # Notify UI that translator is ready
+    try:
+        ui_queue.put({"type": "status", "process": "translator", "status": "ready"}, block=False)
+    except queue.Full:
+        pass
 
     while True:
         try:
@@ -27,7 +33,7 @@ def start_translator(
                 continue
 
             text, lang = item
-            if not text or len(text.strip()) < 3:
+            if not text:
                 continue
 
             translated_text = text
@@ -43,11 +49,15 @@ def start_translator(
                     "type": "translation",
                     "original": text,
                     "translated": translated_text
-                }, block=False)
+                }, block=True, timeout=5.0)
             except queue.Full:
-                pass
+                print("Error: ui_queue full, dropped translation")
             
         except queue.Empty:
             continue
         except Exception as e:
             print(f"Translator error: {e}")
+            try:
+                ui_queue.put({"type": "cancel"}, block=False)
+            except:
+                pass

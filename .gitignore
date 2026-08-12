@@ -1,4 +1,8 @@
 venv/
+.venv/
 .pytest_cache/
 __pycache__/
 *.pyc
+.config/
+logs/*.txt
+.DS_Store

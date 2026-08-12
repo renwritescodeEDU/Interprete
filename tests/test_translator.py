@@ -43,6 +43,13 @@ def test_translator_processes_queue(mock_mps_is_available, mock_pipeline):
 
     start_translator(translation_queue, ui_queue)
 
+    # First message is the "translator ready" status notification
+    status_msg = ui_queue.get(timeout=2)
+    assert isinstance(status_msg, dict)
+    assert status_msg.get("type") == "status"
+    assert status_msg.get("process") == "translator"
+    assert status_msg.get("status") == "ready"
+
     item1 = ui_queue.get(timeout=2)
     assert isinstance(item1, dict)
     assert item1["original"] == "Hello"

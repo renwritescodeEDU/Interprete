@@ -32,11 +32,11 @@ class Orchestrator:
             while not q.empty():
                 try:
                     q.get_nowait()
-                except:
+                except Exception:
                     pass
         
         self.audio_process = multiprocessing.Process(
-            target=start_audio_capture, args=(self.asr_queue, self.control_queue), daemon=True
+            target=start_audio_capture, args=(self.asr_queue, self.control_queue, self.ui_queue, None), daemon=True
         )
         self.asr_process = multiprocessing.Process(
             target=start_transcriber, args=(self.asr_queue, self.translation_queue, self.ui_queue), daemon=True
@@ -52,23 +52,41 @@ class Orchestrator:
 
     def stop_processes(self):
         print("Stopping background processes...")
+        
+        for q in [self.control_queue, self.asr_queue, self.translation_queue]:
+            while not q.empty():
+                try:
+                    q.get_nowait()
+                except Exception:
+                    break
+                    
         # Send poison pills
-        self.asr_queue.put(None)
-        self.translation_queue.put(None)
+        try: self.control_queue.put_nowait("QUIT")
+        except Exception: pass
+        
+        try: self.asr_queue.put_nowait(None)
+        except Exception: pass
+        
+        try: self.translation_queue.put_nowait(None)
+        except Exception: pass
         
         if self.audio_process and self.audio_process.is_alive():
-            self.audio_process.terminate()
-            self.audio_process.join(timeout=1)
+            self.audio_process.join(timeout=3)
+            if self.audio_process.is_alive():
+                self.audio_process.terminate()
+                self.audio_process.join(timeout=1)
             
         if self.asr_process and self.asr_process.is_alive():
-            self.asr_process.join(timeout=2)
+            self.asr_process.join(timeout=3)
             if self.asr_process.is_alive():
                 self.asr_process.terminate()
+                self.asr_process.join(timeout=1)
                 
         if self.translator_process and self.translator_process.is_alive():
-            self.translator_process.join(timeout=2)
+            self.translator_process.join(timeout=3)
             if self.translator_process.is_alive():
                 self.translator_process.terminate()
+                self.translator_process.join(timeout=1)
         
         print("Background processes stopped.")
 
