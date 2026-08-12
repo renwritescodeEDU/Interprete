@@ -1,8 +1,26 @@
 import multiprocessing
 import queue
+import logging
 import torch
 from transformers import pipeline
 
+logger = logging.getLogger(__name__)
+
+# Constants
+MODEL_EN_ES = "Helsinki-NLP/opus-mt-en-es"
+MODEL_ES_EN = "Helsinki-NLP/opus-mt-es-en"
+MAX_LENGTH = 512
+TIMEOUT_GET = 1.0
+TIMEOUT_PUT = 5.0
+
+def _send_to_queue(q, msg, block=False, timeout=None, error_msg="Queue put failed"):
+    try:
+        q.put(msg, block=block, timeout=timeout)
+    except queue.Full:
+        if block:
+            logger.error(error_msg)
+    except Exception as e:
+        logger.debug(f"Queue communication error: {e}")
 
 def start_translator(
     translation_queue: multiprocessing.Queue, ui_queue: multiprocessing.Queue
@@ -14,18 +32,14 @@ def start_translator(
     """
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     
-    en_to_es = pipeline("translation", model="Helsinki-NLP/opus-mt-en-es", device=device, max_length=512, truncation=True)
-    es_to_en = pipeline("translation", model="Helsinki-NLP/opus-mt-es-en", device=device, max_length=512, truncation=True)
+    en_to_es = pipeline("translation", model=MODEL_EN_ES, device=device, max_length=MAX_LENGTH, truncation=True)
+    es_to_en = pipeline("translation", model=MODEL_ES_EN, device=device, max_length=MAX_LENGTH, truncation=True)
 
-    # Notify UI that translator is ready
-    try:
-        ui_queue.put({"type": "status", "process": "translator", "status": "ready"}, block=False)
-    except queue.Full:
-        pass
+    _send_to_queue(ui_queue, {"type": "status", "process": "translator", "status": "ready"})
 
     while True:
         try:
-            item = translation_queue.get(timeout=1)
+            item = translation_queue.get(timeout=TIMEOUT_GET)
             if item is None:
                 break
                 
@@ -44,20 +58,16 @@ def start_translator(
                 result = es_to_en(text)
                 translated_text = result[0]['translation_text']
                 
-            try:
-                ui_queue.put({
-                    "type": "translation",
-                    "original": text,
-                    "translated": translated_text
-                }, block=True, timeout=5.0)
-            except queue.Full:
-                print("Error: ui_queue full, dropped translation")
+            _send_to_queue(
+                ui_queue, 
+                {"type": "translation", "original": text, "translated": translated_text}, 
+                block=True, 
+                timeout=TIMEOUT_PUT, 
+                error_msg="ui_queue full, dropped translation"
+            )
             
         except queue.Empty:
             continue
         except Exception as e:
-            print(f"Translator error: {e}")
-            try:
-                ui_queue.put({"type": "cancel"}, block=False)
-            except:
-                pass
+            logger.error(f"Translator error: {e}")
+            _send_to_queue(ui_queue, {"type": "cancel"})

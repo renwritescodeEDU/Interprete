@@ -4,5 +4,6 @@
 2. Abrir **Configuración de Audio MIDI** (Audio MIDI Setup) en macOS.
 3. Hacer clic en el `+` (abajo a la izquierda) y crear un **Dispositivo de Salida Múltiple** (Multi-Output Device).
 4. Seleccionar tus auriculares/altavoces principales y **BlackHole 2ch**.
-5. En la configuración de sonido de macOS (o en tu software de videollamada/CRM), selecciona el **Dispositivo de Salida Múltiple** como salida de audio.
-6. El sistema de interpretación capturará el audio seleccionando "BlackHole 2ch" como dispositivo de entrada.
+5. **CRÍTICO:** Activa la casilla **"Corrección de deriva" (Drift Correction)** junto a "BlackHole 2ch" para evitar desincronización de audio (glitches) en sesiones largas.
+6. En la configuración de sonido de macOS, selecciona el **Dispositivo de Salida Múltiple** como salida de audio.
+7. El sistema de interpretación capturará el audio seleccionando "BlackHole 2ch" como dispositivo de entrada.

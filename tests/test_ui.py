@@ -40,5 +40,5 @@ def test_ui_classes_exist():
     assert hasattr(MainWindow, "_refresh_devices")
     assert hasattr(MainWindow, "_on_device_changed")
     assert hasattr(MainWindow, "_restore_saved_device")
-    assert hasattr(MainWindow, "_re_enable_device_controls")
+    assert hasattr(MainWindow, "_reset_ui_state")
 

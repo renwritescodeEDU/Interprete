@@ -1,7 +1,29 @@
 import multiprocessing
 import queue
+import logging
 from faster_whisper import WhisperModel
 
+logger = logging.getLogger(__name__)
+
+# Constants
+MODEL_SIZE = "small"
+COMPUTE_TYPE = "int8"
+BEAM_SIZE = 5
+SUPPORTED_LANGUAGES = {"en", "es"}
+TIMEOUT_PUT = 5.0
+TIMEOUT_GET = 1.0
+
+PROMPT_ES = "Hola. Esta es una transcripción en español perfecta, con excelente ortografía, puntuación y gramática."
+PROMPT_EN = "Hello. This is a perfect English transcription, with excellent spelling, punctuation, and grammar."
+
+def _send_to_queue(q, msg, block=False, timeout=None, error_msg="Queue put failed"):
+    try:
+        q.put(msg, block=block, timeout=timeout)
+    except queue.Full:
+        if block:
+            logger.error(error_msg)
+    except Exception as e:
+        logger.debug(f"Queue communication error: {e}")
 
 def start_transcriber(
     asr_queue: multiprocessing.Queue, translation_queue: multiprocessing.Queue, ui_queue: multiprocessing.Queue
@@ -10,88 +32,72 @@ def start_transcriber(
     Pulls audio chunks from asr_queue, transcribes them, and pushes (text, language) tuples
     to translation_queue.
     """
-    model = WhisperModel("small", device="auto", compute_type="int8")
+    model = WhisperModel(MODEL_SIZE, device="auto", compute_type=COMPUTE_TYPE)
     
-    # Notify UI that transcriber is ready
-    try:
-        ui_queue.put({"type": "status", "process": "transcriber", "status": "ready"}, block=False)
-    except queue.Full:
-        pass
+    _send_to_queue(ui_queue, {"type": "status", "process": "transcriber", "status": "ready"})
 
     detected_language = None
 
     while True:
         try:
-            item = asr_queue.get(timeout=1)
-            if item is None:
-                break
-            
-            if item == "QUIT":
+            item = asr_queue.get(timeout=TIMEOUT_GET)
+            if item is None or item == "QUIT":
                 break
 
             if not isinstance(item, tuple) or len(item) != 3:
                 continue
 
             audio_data, rate, is_final = item
-            if audio_data is not None and len(audio_data) > 0:
-                if detected_language == "es":
-                    prompt = "Hola. Esta es una transcripción en español perfecta, con excelente ortografía, puntuación y gramática."
-                elif detected_language == "en":
-                    prompt = "Hello. This is a perfect English transcription, with excellent spelling, punctuation, and grammar."
-                else:
-                    prompt = None
-                    
-                segments, info = model.transcribe(
-                    audio_data, 
-                    beam_size=5, 
-                    vad_filter=True,
-                    initial_prompt=prompt
-                )
-                
-                detected_language = info.language
-                
-                if info.language in ["en", "es"]:
-                    text = "".join(segment.text for segment in segments).strip()
-                    if text:
-                        if not is_final:
-                            # Send partial to UI
-                            try:
-                                ui_queue.put({"type": "partial", "text": text}, block=False)
-                            except queue.Full:
-                                pass
-                        else:
-                            detected_language = None
-                            # Send final status to UI
-                            try:
-                                ui_queue.put({"type": "final", "text": text}, block=True, timeout=5.0)
-                            except queue.Full:
-                                print("Error: ui_queue full, dropped final transcription")
-                            
-                            # Send to translator
-                            try:
-                                translation_queue.put((text, info.language), block=True, timeout=5.0)
-                            except queue.Full:
-                                print("Error: translation_queue full, dropped text")
-                    else:
-                        if is_final:
-                            detected_language = None
-                            try: ui_queue.put({"type": "cancel"}, block=False)
-                            except: pass
-                else:
-                    if is_final:
-                        detected_language = None
-                        try: ui_queue.put({"type": "cancel"}, block=False)
-                        except: pass
-            else:
+            
+            # Guard clause: Empty audio
+            if audio_data is None or len(audio_data) == 0:
                 if is_final:
                     detected_language = None
-                    try: ui_queue.put({"type": "cancel"}, block=False)
-                    except: pass
+                    _send_to_queue(ui_queue, {"type": "cancel"})
+                continue
+
+            # Determine initial prompt based on previously detected language
+            prompt = None
+            if detected_language == "es":
+                prompt = PROMPT_ES
+            elif detected_language == "en":
+                prompt = PROMPT_EN
+                
+            segments, info = model.transcribe(
+                audio_data, 
+                beam_size=BEAM_SIZE, 
+                vad_filter=True,
+                initial_prompt=prompt
+            )
+            
+            detected_language = info.language
+            
+            # Guard clause: Unsupported language
+            if detected_language not in SUPPORTED_LANGUAGES:
+                if is_final:
+                    detected_language = None
+                    _send_to_queue(ui_queue, {"type": "cancel"})
+                continue
+
+            text = "".join(segment.text for segment in segments).strip()
+            
+            # Guard clause: No text produced
+            if not text:
+                if is_final:
+                    detected_language = None
+                    _send_to_queue(ui_queue, {"type": "cancel"})
+                continue
+
+            # Valid text branch
+            if not is_final:
+                _send_to_queue(ui_queue, {"type": "partial", "text": text})
+            else:
+                detected_language = None
+                _send_to_queue(ui_queue, {"type": "final", "text": text}, block=True, timeout=TIMEOUT_PUT, error_msg="ui_queue full, dropped final transcription")
+                _send_to_queue(translation_queue, (text, info.language), block=True, timeout=TIMEOUT_PUT, error_msg="translation_queue full, dropped text")
+
         except queue.Empty:
             continue
         except Exception as e:
-            print(f"Transcriber error: {e}")
-            try:
-                ui_queue.put({"type": "error", "message": f"Transcription Error: {e}"}, block=True, timeout=5.0)
-            except Exception:
-                pass
+            logger.error(f"Transcriber error: {e}")
+            _send_to_queue(ui_queue, {"type": "error", "message": f"Transcription Error: {e}"}, block=True, timeout=TIMEOUT_PUT)

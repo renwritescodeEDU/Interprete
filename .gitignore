@@ -1,8 +1,25 @@
+# Entorno virtual y Python
 venv/
 .venv/
-.pytest_cache/
 __pycache__/
 *.pyc
-.config/
+*.pyo
+*.pyd
+
+# Tests
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs y configuración local
 logs/*.txt
+.config/
+
+# SO
 .DS_Store
+
+# Machine Learning / Modelos (Evitar commits accidentales de gigabytes)
+*.safetensors
+*.bin
+*.pt
+*.onnx
