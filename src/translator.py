@@ -1,73 +1,112 @@
 import multiprocessing
 import queue
+import time
+import json
 import logging
-import torch
-from transformers import pipeline
+import concurrent.futures
+import ollama
 
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
 # Constants
-MODEL_EN_ES = "Helsinki-NLP/opus-mt-en-es"
-MODEL_ES_EN = "Helsinki-NLP/opus-mt-es-en"
-MAX_LENGTH = 512
-TIMEOUT_GET = 1.0
-TIMEOUT_PUT = 5.0
+LLM_MODEL = "qwen2.5:1.5b"
+CONTEXT_LIMIT = 2
 
-def _send_to_queue(q, msg, block=False, timeout=None, error_msg="Queue put failed"):
-    try:
-        q.put(msg, block=block, timeout=timeout)
-    except queue.Full:
-        if block:
-            logger.error(error_msg)
-    except Exception as e:
-        logger.debug(f"Queue communication error: {e}")
-
-def start_translator(
-    translation_queue: multiprocessing.Queue, ui_queue: multiprocessing.Queue
-):
-    """
-    Translates text based on detected language using MarianMT.
-    Pulls (text, lang) tuples from translation_queue and pushes
-    (original_text, translated_text) tuples to ui_queue.
-    """
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
+def translate_ollama(text: str, source_lang: str, target_lang: str, context_history: list) -> tuple:
+    """Translates text using the Ollama local LLM, forced into JSON mode."""
+    start_t = time.time()
     
-    en_to_es = pipeline("translation", model=MODEL_EN_ES, device=device, max_length=MAX_LENGTH, truncation=True)
-    es_to_en = pipeline("translation", model=MODEL_ES_EN, device=device, max_length=MAX_LENGTH, truncation=True)
+    # Take only the last CONTEXT_LIMIT phrases to reduce prompt latency
+    recent_context = context_history[-CONTEXT_LIMIT:] if context_history else []
+    context_str = "\n".join([f"- {h}" for h in recent_context])
+    
+    prompt = f"""You are a strict JSON translation API. 
+Your ONLY task is to translate the following {source_lang} text to {target_lang}.
+Output ONLY valid JSON in this exact format: {{"translation": "the translated string"}}.
+Do not add any conversational text, greetings, or explanations.
 
-    _send_to_queue(ui_queue, {"type": "status", "process": "translator", "status": "ready"})
+CRITICAL INSTRUCTION 1: Ensure the translation is perfectly punctuated with commas and periods to make it easy to read aloud smoothly. Do not output run-on sentences.
+CRITICAL INSTRUCTION 2: If you encounter specialized medical or legal terminology that you do not understand, translate it literally. DO NOT invent or hallucinate medical terms.
+CRITICAL INSTRUCTION 3: Translate colloquialisms, idioms, and slang into their natural cultural equivalent meaning, not literally (e.g. Spanish 'me cago en la leche' means 'damn it', 'chanta' means 'scammer').
 
-    while True:
-        try:
-            item = translation_queue.get(timeout=TIMEOUT_GET)
-            if item is None:
-                break
-                
-            if not isinstance(item, tuple) or len(item) != 2:
-                continue
+Use this conversation history to understand context, tone, and idioms:
+{context_str}
 
-            text, lang = item
-            if not text:
-                continue
-
-            translated_text = text
-            if lang == "en":
-                result = en_to_es(text)
-                translated_text = result[0]['translation_text']
-            elif lang == "es":
-                result = es_to_en(text)
-                translated_text = result[0]['translation_text']
-                
-            _send_to_queue(
-                ui_queue, 
-                {"type": "translation", "original": text, "translated": translated_text}, 
-                block=True, 
-                timeout=TIMEOUT_PUT, 
-                error_msg="ui_queue full, dropped translation"
-            )
+Text to translate:
+{text}
+"""
+    try:
+        response = ollama.chat(
+            model=LLM_MODEL, 
+            messages=[{'role': 'user', 'content': prompt}],
+            format='json',
+            options={'temperature': 0.0}
+        )
+        # Parse JSON output
+        res_json = json.loads(response['message']['content'])
+        translated_text = res_json.get('translation', '')
+        
+        # Fallback if the model failed to output the expected key
+        if not translated_text:
+            translated_text = response['message']['content']
             
-        except queue.Empty:
-            continue
-        except Exception as e:
-            logger.error(f"Translator error: {e}")
-            _send_to_queue(ui_queue, {"type": "cancel"})
+    except Exception as e:
+        logger.error(f"Ollama translation failed: {e}")
+        translated_text = f"[LLM Error: {e}]"
+        
+    return translated_text, round(time.time() - start_t, 2)
+
+
+def process_translation_task(task: tuple, context_history: list, ui_queue: multiprocessing.Queue):
+    """Processes a single translation task using Ollama."""
+    text, lang = task
+    
+    target_lang = "Spanish" if lang == "en" else "English"
+    source_lang = "English" if lang == "en" else "Spanish"
+
+    # Run Ollama translation
+    ollama_translation, ollama_time = translate_ollama(text, source_lang, target_lang, context_history)
+    
+    ui_queue.put({
+        "type": "translation",
+        "original": text,
+        "translated": ollama_translation,
+        "latency": ollama_time
+    })
+
+
+def start_translator(translation_queue: multiprocessing.Queue, ui_queue: multiprocessing.Queue):
+    """Main process loop for translation."""
+    
+    # Pre-warm Ollama to load the model into memory
+    try:
+        logger.info(f"Warming up Ollama with model {LLM_MODEL}...")
+        ollama.chat(model=LLM_MODEL, messages=[{'role': 'user', 'content': '{"test":"hi"}'}], format='json', options={'temperature': 0.0}, keep_alive=-1)
+    except Exception as e:
+        logger.warning(f"Failed to pre-warm Ollama: {e}. Is Ollama running?")
+
+    context_history = []
+    ui_queue.put({"type": "status", "process": "translator", "status": "ready"})
+
+    # We use a ThreadPoolExecutor to handle incoming requests concurrently without blocking the queue reader
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        while True:
+            try:
+                task = translation_queue.get()
+                if task is None:
+                    break
+
+                text, _ = task
+                context_history.append(text)
+                if len(context_history) > 10:
+                    context_history.pop(0)
+
+                # Submit to thread pool
+                executor.submit(process_translation_task, task, context_history.copy(), ui_queue)
+
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"Error in translator loop: {e}")
+                ui_queue.put({"type": "error", "message": f"Translation Error: {e}"})

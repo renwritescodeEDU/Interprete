@@ -352,6 +352,31 @@ class MainWindow(QMainWindow):
         self.history_layout.addWidget(bubble)
         QTimer.singleShot(50, lambda: self.scroll_area.verticalScrollBar().setValue(self.scroll_area.verticalScrollBar().maximum()))
 
+    def _add_to_history(self, original: str, translated: str, latency: float = 0.0):
+        bubble = QFrame()
+        bubble.setObjectName("Bubble")
+        bubble_layout = QVBoxLayout()
+        bubble_layout.setContentsMargins(12, 12, 12, 12)
+        bubble_layout.setSpacing(6)
+        bubble.setLayout(bubble_layout)
+        bubble.setStyleSheet("QFrame#Bubble { background-color: #1E293B; border-radius: 8px; border: 1px solid #334155; }")
+        
+        lbl_orig = QLabel(original)
+        lbl_orig.setObjectName("OrigText")
+        lbl_orig.setWordWrap(True)
+        lbl_orig.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        
+        latency_str = f" [{latency}s]" if latency > 0 else ""
+        lbl_trans = QLabel(f"<b>Qwen2.5</b>{latency_str}: {translated}")
+        lbl_trans.setObjectName("TransText")
+        lbl_trans.setWordWrap(True)
+        lbl_trans.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        
+        bubble_layout.addWidget(lbl_orig)
+        bubble_layout.addWidget(lbl_trans)
+        self.history_layout.addWidget(bubble)
+        QTimer.singleShot(50, lambda: self.scroll_area.verticalScrollBar().setValue(self.scroll_area.verticalScrollBar().maximum()))
+
     def _log_message(self, original: str, translated: str):
         if not self.log_path:
             return
@@ -392,7 +417,8 @@ class MainWindow(QMainWindow):
                     elif msg_type == "translation":
                         original = item.get("original", "")
                         translated = item.get("translated", "")
-                        self._add_to_history(original, translated)
+                        latency = item.get("latency", 0.0)
+                        self._add_to_history(original, translated, latency)
                         self._log_message(original, translated)
                         self._reset_ui_state()
                     elif msg_type == "cancel":

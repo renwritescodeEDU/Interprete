@@ -3,8 +3,7 @@ import queue
 import logging
 import numpy as np
 import pyaudio
-import torchaudio
-import torch
+import scipy.signal
 
 # Constants
 CHUNK = 480  # 30ms at 16000Hz
@@ -119,9 +118,9 @@ def _process_audio_frames(frames_list: list, actual_rate: int) -> np.ndarray:
     audio_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
     
     if actual_rate != RATE:
-        audio_tensor = torch.from_numpy(audio_array)
-        audio_tensor = torchaudio.functional.resample(audio_tensor, actual_rate, RATE)
-        audio_array = audio_tensor.numpy()
+        import fractions
+        frac = fractions.Fraction(RATE, actual_rate)
+        audio_array = scipy.signal.resample_poly(audio_array, frac.numerator, frac.denominator)
         
     return audio_array
 

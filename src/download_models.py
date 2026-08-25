@@ -1,26 +1,23 @@
-from transformers import pipeline
-from faster_whisper import WhisperModel
+import sys
+import subprocess
 import logging
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
-# Constants matching runtime files
-MODEL_EN_ES = "Helsinki-NLP/opus-mt-en-es"
-MODEL_ES_EN = "Helsinki-NLP/opus-mt-es-en"
-WHISPER_MODEL = "small"
+LLM_MODEL = "qwen2.5:1.5b"
 
 def download_models():
-    logger.info(f"Downloading English -> Spanish model ({MODEL_EN_ES})...")
-    pipeline("translation", model=MODEL_EN_ES)
-    
-    logger.info(f"Downloading Spanish -> English model ({MODEL_ES_EN})...")
-    pipeline("translation", model=MODEL_ES_EN)
-    
-    logger.info(f"Downloading Whisper ASR model ({WHISPER_MODEL})...")
-    WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
-    
-    logger.info("Models downloaded and cached successfully. The system is ready for offline use.")
+    """Download required local LLM models using Ollama CLI."""
+    logger.info(f"Pulling LLM model '{LLM_MODEL}' via Ollama...")
+    try:
+        subprocess.run(["ollama", "pull", LLM_MODEL], check=True)
+        logger.info(f"Model '{LLM_MODEL}' is ready.")
+    except Exception as e:
+        logger.error(f"Failed to pull '{LLM_MODEL}'. Is Ollama installed and running? Error: {e}")
+        sys.exit(1)
+        
+    logger.info("All dependencies downloaded successfully.")
 
 if __name__ == "__main__":
     download_models()
