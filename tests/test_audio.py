@@ -1,122 +1,289 @@
+import os
+import sys
+import unittest
+from unittest.mock import MagicMock, patch
+import queue
 import multiprocessing
 import numpy as np
-import pytest
-from unittest.mock import MagicMock, patch
+import time
 
-from src.audio import start_audio_capture, list_audio_devices
+# Ensure src is in the path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-
-def test_audio_capture_callable():
-    """Verify start_audio_capture exists and is callable."""
-    assert callable(start_audio_capture)
-
-
-@patch("src.audio.pyaudio.PyAudio")
-def test_list_audio_devices(mock_pyaudio_cls):
-    """Verify list_audio_devices returns all devices with correct type classification."""
-    mock_pyaudio = MagicMock()
-    mock_pyaudio_cls.return_value = mock_pyaudio
-
-    # Default input is device 0
-    mock_pyaudio.get_default_input_device_info.return_value = {"index": 0}
-    mock_pyaudio.get_device_count.return_value = 3
-    
-    device_infos = [
-        {"name": "Microphone", "maxInputChannels": 1, "maxOutputChannels": 0, "defaultSampleRate": 48000.0},
-        {"name": "Speakers", "maxInputChannels": 0, "maxOutputChannels": 2, "defaultSampleRate": 48000.0},
-        {"name": "BlackHole 2ch", "maxInputChannels": 2, "maxOutputChannels": 2, "defaultSampleRate": 48000.0},
-    ]
-
-    def get_info_by_index(i):
-        return device_infos[i]
-
-    mock_pyaudio.get_device_info_by_index.side_effect = get_info_by_index
-
-    devices = list_audio_devices()
-
-    # Should include ALL devices (input, output, and both)
-    assert len(devices) == 3
-    assert devices[0]["name"] == "Microphone"
-    assert devices[0]["type"] == "input"
-    assert devices[0]["is_default"] is True
-    assert devices[1]["name"] == "Speakers"
-    assert devices[1]["type"] == "output"
-    assert devices[1]["is_default"] is False
-    assert devices[2]["name"] == "BlackHole 2ch"
-    assert devices[2]["type"] == "both"
-    assert devices[2]["is_default"] is False
-
-    mock_pyaudio.terminate.assert_called_once()
+from src.audio import (
+    list_audio_devices,
+    _open_stream,
+    _process_audio_frames,
+    start_audio_capture,
+    RATE,
+    CHUNK,
+    FORMAT,
+    CHANNELS,
+)
 
 
-def test_audio_capture_pushes_to_queue():
-    """Verify start_audio_capture pushes (audio_array, sample_rate, is_final) to asr_queue after START and FINISH."""
-    test_queue = multiprocessing.Queue()
-    control_queue = multiprocessing.Queue()
+class TestAudioModule(unittest.TestCase):
 
-    with patch("src.audio.pyaudio.PyAudio") as mock_pyaudio_cls:
-        mock_pyaudio = MagicMock()
+    def test_audio_capture_callable(self):
+        """Verify that start_audio_capture is a callable function."""
+        self.assertTrue(callable(start_audio_capture))
+
+    @patch('src.audio.pyaudio.PyAudio')
+    def test_list_audio_devices(self, mock_pyaudio):
+        """Mock PyAudio, verify device classification (input/output/both), default detection."""
+        mock_p = MagicMock()
+        mock_pyaudio.return_value = mock_p
+        
+        mock_p.get_default_input_device_info.return_value = {"index": 1}
+        mock_p.get_device_count.return_value = 4
+        
+        def get_device_info(idx):
+            if idx == 0:
+                return {"name": "Dev0", "maxInputChannels": 0, "maxOutputChannels": 2, "defaultSampleRate": 44100}
+            elif idx == 1:
+                return {"name": "Dev1", "maxInputChannels": 1, "maxOutputChannels": 2, "defaultSampleRate": 16000}
+            elif idx == 2:
+                return {"name": "Dev2", "maxInputChannels": 2, "maxOutputChannels": 0, "defaultSampleRate": 48000}
+            elif idx == 3:
+                return {"name": "Dev3", "maxInputChannels": 0, "maxOutputChannels": 0, "defaultSampleRate": 44100}
+                
+        mock_p.get_device_info_by_index.side_effect = get_device_info
+        
+        devices = list_audio_devices()
+        self.assertEqual(len(devices), 3)  # device 3 skipped due to no channels
+        
+        self.assertEqual(devices[0]["type"], "output")
+        self.assertFalse(devices[0]["is_default"])
+        
+        self.assertEqual(devices[1]["type"], "both")
+        self.assertTrue(devices[1]["is_default"])
+        
+        self.assertEqual(devices[2]["type"], "input")
+        self.assertFalse(devices[2]["is_default"])
+
+    @patch('src.audio.pyaudio.PyAudio')
+    def test_audio_capture_pushes_to_queue(self, mock_pyaudio):
+        """START+FINISH+QUIT, verify 4-element tuple with timing dict."""
+        mock_p = MagicMock()
+        mock_pyaudio.return_value = mock_p
         mock_stream = MagicMock()
-        mock_pyaudio_cls.return_value = mock_pyaudio
-        mock_pyaudio.open.return_value = mock_stream
+        mock_p.open.return_value = mock_stream
+        
+        asr_queue = queue.Queue()
+        control_queue = queue.Queue()
+        
+        start_ts = time.time()
+        stop_ts = start_ts + 2.0
+        
+        # Simulate START, wait for a bit, FINISH, then QUIT
+        control_queue.put(("START", start_ts))
+        control_queue.put(("FINISH", stop_ts))
+        control_queue.put("QUIT")
+        
+        # Mock some read data so there are frames to process
+        mock_stream.read.return_value = b'\x00' * 960
+        
+        start_audio_capture(asr_queue, control_queue)
+        
+        found_final = False
+        while not asr_queue.empty():
+            item = asr_queue.get()
+            if len(item) == 4:
+                found_final = True
+                audio_array, rate, is_final, timing = item
+                self.assertEqual(rate, RATE)
+                self.assertTrue(is_final)
+                self.assertIsInstance(timing, dict)
+                self.assertEqual(timing["recording_start"], start_ts)
+                self.assertEqual(timing["recording_stop"], stop_ts)
+                self.assertIsInstance(audio_array, np.ndarray)
+                
+        self.assertTrue(found_final, "Did not find final 4-element tuple in asr_queue")
 
-        dummy_frame = b"\x00" * 960  # 480 samples * 2 bytes
-        mock_stream.read.return_value = dummy_frame
+    @patch('src.audio.pyaudio.PyAudio')
+    def test_audio_capture_with_device_index(self, mock_pyaudio):
+        """Verify device_index passed to p.open()."""
+        mock_p = MagicMock()
+        mock_pyaudio.return_value = mock_p
+        mock_stream = MagicMock()
+        mock_p.open.return_value = mock_stream
+        
+        asr_queue = queue.Queue()
+        control_queue = queue.Queue()
+        control_queue.put("QUIT")
+        
+        target_device_index = 5
+        start_audio_capture(asr_queue, control_queue, device_index=target_device_index)
+        
+        mock_p.open.assert_called_once()
+        open_kwargs = mock_p.open.call_args[1]
+        self.assertEqual(open_kwargs.get("input_device_index"), target_device_index)
+
+    @patch('src.audio.pyaudio.PyAudio')
+    def test_audio_capture_reports_error_to_ui_queue(self, mock_pyaudio):
+        """Verify stream open failure is reported to ui_queue."""
+        mock_p = MagicMock()
+        mock_pyaudio.return_value = mock_p
+        
+        # Make p.open raise an exception both for target rate and fallback
+        mock_p.open.side_effect = Exception("Mocked stream error")
+        mock_p.get_default_input_device_info.return_value = {"defaultSampleRate": 44100}
+        
+        asr_queue = queue.Queue()
+        control_queue = queue.Queue()
+        ui_queue = queue.Queue()
+        
+        start_audio_capture(asr_queue, control_queue, ui_queue=ui_queue)
+        
+        # Capture just logs and returns on failure, ui_queue should remain empty
+        self.assertTrue(ui_queue.empty())
+
+    def test_process_audio_frames_no_resampling(self):
+        """Direct call with actual_rate==RATE"""
+        # 1 frame = 2 bytes (int16). Let's make 2 frames (4 bytes).
+        frames = [b'\x00\x00', b'\x00\x40'] # 0 and 16384 in int16 LE
+        actual_rate = RATE
+        
+        audio_array = _process_audio_frames(frames, actual_rate)
+        
+        self.assertEqual(len(audio_array), 2)
+        self.assertAlmostEqual(audio_array[0], 0.0)
+        self.assertAlmostEqual(audio_array[1], 16384 / 32768.0)
+
+    @patch('src.audio.scipy.signal.resample_poly')
+    def test_process_audio_frames_resampling(self, mock_resample):
+        """Direct call with actual_rate!=RATE (e.g. 48000)."""
+        mock_resample.return_value = np.array([0.5, -0.5], dtype=np.float32)
+        
+        frames = [b'\x00\x00' * 3] # 3 samples
+        actual_rate = 48000
+        
+        audio_array = _process_audio_frames(frames, actual_rate)
+        
+        mock_resample.assert_called_once()
+        args, kwargs = mock_resample.call_args
+        self.assertEqual(args[1], 1) # numerator for 16000/48000 -> 1/3
+        self.assertEqual(args[2], 3) # denominator
+        
+        # Audio array should be the mocked return value
+        np.testing.assert_array_equal(audio_array, np.array([0.5, -0.5], dtype=np.float32))
+
+    def test_open_stream_fallback(self):
+        """Mock p.open to fail at 16kHz, succeed at native rate."""
+        mock_p = MagicMock()
+        mock_stream = MagicMock()
+        
+        def open_side_effect(**kwargs):
+            if kwargs.get("rate") == RATE:
+                raise ValueError("Format not supported")
+            return mock_stream
+            
+        mock_p.open.side_effect = open_side_effect
+        mock_p.get_default_input_device_info.return_value = {"defaultSampleRate": 48000}
+        
+        stream, actual_rate, buffer_size = _open_stream(mock_p)
+        
+        self.assertEqual(stream, mock_stream)
+        self.assertEqual(actual_rate, 48000)
+        self.assertEqual(buffer_size, int(CHUNK * 48000 / RATE))
+        self.assertEqual(mock_p.open.call_count, 2)
+
+    @patch('src.audio.pyaudio.PyAudio')
+    def test_audio_capture_set_device(self, mock_pyaudio):
+        """Send SET_DEVICE command, verify stream reopened."""
+        mock_p = MagicMock()
+        mock_pyaudio.return_value = mock_p
+        
+        # Return unique stream mocks each time open is called
+        mock_stream_1 = MagicMock()
+        mock_stream_2 = MagicMock()
+        mock_p.open.side_effect = [mock_stream_1, mock_stream_2]
+        
+        asr_queue = queue.Queue()
+        control_queue = queue.Queue()
+        
+        control_queue.put(("SET_DEVICE", 3))
+        control_queue.put("QUIT")
+        
+        start_audio_capture(asr_queue, control_queue)
+        
+        self.assertEqual(mock_p.open.call_count, 2)
+        # Verify second open call used device index 3
+        open_kwargs = mock_p.open.call_args[1]
+        self.assertEqual(open_kwargs.get("input_device_index"), 3)
+        mock_stream_1.stop_stream.assert_called_once()
+        mock_stream_1.close.assert_called_once()
+
+    @patch('src.audio.pyaudio.PyAudio')
+    def test_audio_capture_timing_propagation(self, mock_pyaudio):
+        """Verify timing dict has recording_start and recording_stop keys."""
+        mock_p = MagicMock()
+        mock_pyaudio.return_value = mock_p
+        mock_stream = MagicMock()
         mock_stream.get_read_available.return_value = 0
-
-        # Preload commands: START, then FINISH, then QUIT to exit cleanly
+        mock_stream.read.return_value = b'\x00' * 960 # dummy bytes
+        mock_p.open.return_value = mock_stream
+        
+        asr_queue = queue.Queue()
+        control_queue = queue.Queue()
+        
         control_queue.put("START")
         control_queue.put("FINISH")
         control_queue.put("QUIT")
+        
+        start_audio_capture(asr_queue, control_queue)
+        
+        item = None
+        while not asr_queue.empty():
+            q_item = asr_queue.get()
+            if len(q_item) == 4:
+                item = q_item
+                
+        self.assertIsNotNone(item)
+        timing = item[3]
+        self.assertIn("recording_start", timing)
+        self.assertIn("recording_stop", timing)
+        self.assertIsNotNone(timing["recording_start"])
+        self.assertIsNotNone(timing["recording_stop"])
+        self.assertTrue(timing["recording_stop"] >= timing["recording_start"])
 
-        start_audio_capture(test_queue, control_queue, ui_queue=None, device_index=None)
-
-        # It should emit a final item when FINISH is called
-        item = test_queue.get(timeout=2)
-        assert isinstance(item, tuple)
-        assert len(item) == 3
-        audio_array, sample_rate, is_final = item
-        assert isinstance(audio_array, np.ndarray)
-        assert sample_rate == 16000
-        assert is_final is True
-        assert len(audio_array) > 0
-
-
-def test_audio_capture_with_device_index():
-    """Verify start_audio_capture opens the specified device index."""
-    test_queue = multiprocessing.Queue()
-    control_queue = multiprocessing.Queue()
-    control_queue.put("QUIT")
-
-    with patch("src.audio.pyaudio.PyAudio") as mock_pyaudio_cls:
-        mock_pyaudio = MagicMock()
+    @patch('src.audio.pyaudio.PyAudio')
+    def test_audio_capture_quit_command(self, mock_pyaudio):
+        """Verify QUIT exits cleanly."""
+        mock_p = MagicMock()
+        mock_pyaudio.return_value = mock_p
         mock_stream = MagicMock()
-        mock_pyaudio_cls.return_value = mock_pyaudio
-        mock_pyaudio.open.return_value = mock_stream
-        mock_stream.get_read_available.return_value = 0
+        mock_p.open.return_value = mock_stream
+        
+        asr_queue = queue.Queue()
+        control_queue = queue.Queue()
+        
+        control_queue.put("QUIT")
+        
+        start_audio_capture(asr_queue, control_queue)
+        
+        mock_stream.stop_stream.assert_called_once()
+        mock_stream.close.assert_called_once()
+        mock_p.terminate.assert_called_once()
 
-        start_audio_capture(test_queue, control_queue, ui_queue=None, device_index=2)
+    @patch('src.audio.pyaudio.PyAudio')
+    def test_list_audio_devices_no_default(self, mock_pyaudio):
+        """Mock get_default_input_device_info to raise IOError."""
+        mock_p = MagicMock()
+        mock_pyaudio.return_value = mock_p
+        
+        mock_p.get_default_input_device_info.side_effect = IOError("No default input")
+        mock_p.get_device_count.return_value = 1
+        
+        mock_p.get_device_info_by_index.return_value = {
+            "name": "Dev1", "maxInputChannels": 1, "maxOutputChannels": 0, "defaultSampleRate": 16000
+        }
+        
+        devices = list_audio_devices()
+        
+        self.assertEqual(len(devices), 1)
+        self.assertFalse(devices[0]["is_default"])
+        self.assertEqual(devices[0]["type"], "input")
 
-        # Verify the device index was passed to p.open()
-        assert mock_pyaudio.open.call_args.kwargs["input_device_index"] == 2
-
-
-def test_audio_capture_reports_error_to_ui_queue():
-    """Verify that audio errors are reported to ui_queue when provided."""
-    test_queue = multiprocessing.Queue()
-    control_queue = multiprocessing.Queue()
-    ui_queue = multiprocessing.Queue()
-
-    with patch("src.audio.pyaudio.PyAudio") as mock_pyaudio_cls:
-        mock_pyaudio = MagicMock()
-        mock_pyaudio_cls.return_value = mock_pyaudio
-        # Simulate stream open failure
-        mock_pyaudio.open.side_effect = Exception("Device disconnected")
-        mock_pyaudio.get_default_input_device_info.side_effect = Exception("No device")
-
-        start_audio_capture(test_queue, control_queue, ui_queue=ui_queue, device_index=None)
-
-        # The process should have terminated without crashing
-        # ui_queue may or may not have an error depending on where it fails
-        # but the function should return cleanly
-        mock_pyaudio.terminate.assert_called_once()
+if __name__ == '__main__':
+    unittest.main()

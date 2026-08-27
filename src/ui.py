@@ -3,10 +3,11 @@ import queue
 import sys
 import os
 import json
+import time
 import logging
 from datetime import datetime
 from PyQt6.QtCore import Qt, QTimer, QPoint
-from PyQt6.QtGui import QGuiApplication, QMouseEvent, QFont, QColor
+from PyQt6.QtGui import QGuiApplication, QMouseEvent
 from PyQt6.QtWidgets import (
     QApplication, QLabel, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QScrollArea, QSizePolicy, QFrame, QMainWindow,
@@ -287,6 +288,8 @@ class MainWindow(QMainWindow):
     def on_action_clicked(self):
         if not self.is_recording:
             self.is_recording = True
+            self._recording_start_time = time.time()
+            logger.info("[UI] Start Recording clicked")
             self.sys_status_label.setText("Recording...")
             self.sys_status_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 14px; font-weight: 500;")
             self.device_combo.setEnabled(False)
@@ -296,10 +299,13 @@ class MainWindow(QMainWindow):
             self.action_btn.style().polish(self.action_btn)
             self.action_btn.setText("Stop Recording")
             try:
-                self.control_queue.put("START", block=False)
+                self.control_queue.put(("START", self._recording_start_time), block=False)
             except Exception as e:
                 logger.warning(f"Failed to queue START: {e}")
         else:
+            stop_time = time.time()
+            recording_duration = stop_time - self._recording_start_time if hasattr(self, '_recording_start_time') else 0
+            logger.info(f"[UI] Stop Recording clicked (recorded for {recording_duration:.2f}s)")
             self.is_recording = False
             self.sys_status_label.setText("Translating...")
             self.sys_status_label.setStyleSheet(f"color: {COLOR_WARNING}; font-size: 14px; font-weight: 500;")
@@ -309,14 +315,15 @@ class MainWindow(QMainWindow):
             self.action_btn.setText("Start Recording")
             self.action_btn.setEnabled(False)
             try:
-                self.control_queue.put("FINISH", block=False)
+                self.control_queue.put(("FINISH", stop_time), block=False)
             except Exception as e:
                 logger.warning(f"Failed to queue FINISH: {e}")
 
     def _reset_ui_state(self, is_error=False):
         """Deduplicates common UI reset code."""
-        self.current_label.hide()
-        self.current_label.setText("")
+        if not is_error:
+            self.current_label.hide()
+            self.current_label.setText("")
         if not is_error:
             self.sys_status_label.setText("System Ready")
             self.sys_status_label.setStyleSheet(f"color: {COLOR_SUCCESS}; font-size: 14px; font-weight: 500;")
@@ -328,7 +335,7 @@ class MainWindow(QMainWindow):
         self.device_combo.setEnabled(True)
         self.refresh_btn.setEnabled(True)
 
-    def _add_to_history(self, original: str, translated: str):
+    def _add_to_history(self, original: str, translated: str, latency: float = 0.0):
         bubble = QFrame()
         bubble.setObjectName("Bubble")
         bubble_layout = QVBoxLayout()
@@ -352,38 +359,24 @@ class MainWindow(QMainWindow):
         self.history_layout.addWidget(bubble)
         QTimer.singleShot(50, lambda: self.scroll_area.verticalScrollBar().setValue(self.scroll_area.verticalScrollBar().maximum()))
 
-    def _add_to_history(self, original: str, translated: str, latency: float = 0.0):
-        bubble = QFrame()
-        bubble.setObjectName("Bubble")
-        bubble_layout = QVBoxLayout()
-        bubble_layout.setContentsMargins(12, 12, 12, 12)
-        bubble_layout.setSpacing(6)
-        bubble.setLayout(bubble_layout)
-        bubble.setStyleSheet("QFrame#Bubble { background-color: #1E293B; border-radius: 8px; border: 1px solid #334155; }")
-        
-        lbl_orig = QLabel(original)
-        lbl_orig.setObjectName("OrigText")
-        lbl_orig.setWordWrap(True)
-        lbl_orig.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        
-        latency_str = f" [{latency}s]" if latency > 0 else ""
-        lbl_trans = QLabel(f"<b>Qwen2.5</b>{latency_str}: {translated}")
-        lbl_trans.setObjectName("TransText")
-        lbl_trans.setWordWrap(True)
-        lbl_trans.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        
-        bubble_layout.addWidget(lbl_orig)
-        bubble_layout.addWidget(lbl_trans)
-        self.history_layout.addWidget(bubble)
-        QTimer.singleShot(50, lambda: self.scroll_area.verticalScrollBar().setValue(self.scroll_area.verticalScrollBar().maximum()))
-
-    def _log_message(self, original: str, translated: str):
+    def _log_message(self, original: str, translated: str, timing: dict = None):
         if not self.log_path:
             return
         try:
-            timestamp = datetime.now().strftime('%H:%M:%S')
+            timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+            lines = [
+                f"[{timestamp}] Original: {original}",
+                f"[{timestamp}] Traducido: {translated}",
+            ]
+            if timing and timing.get("recording_start") and timing.get("recording_stop"):
+                rec_dur = timing["recording_stop"] - timing["recording_start"]
+                trans_dur = timing.get("transcription_end", 0) - timing.get("transcription_start", 0) if timing.get("transcription_start") else 0
+                tl_dur = timing.get("translation_end", 0) - timing.get("translation_start", 0) if timing.get("translation_start") else 0
+                total = time.time() - timing["recording_stop"]
+                status_tag = "OK" if total <= 2.0 else "SLOW"
+                lines.append(f"[{timestamp}] Pipeline: rec={rec_dur:.2f}s | asr={trans_dur:.3f}s | tl={tl_dur:.3f}s | total={total:.3f}s [{status_tag}]")
             with open(self.log_path, "a", encoding="utf-8") as f:
-                f.write(f"[{timestamp}] Original: {original}\n[{timestamp}] Traducido: {translated}\n" + "-" * 40 + "\n")
+                f.write("\n".join(lines) + "\n" + "-" * 40 + "\n")
         except Exception as e:
             logger.warning(f"Failed to log message: {e}")
 
@@ -415,11 +408,28 @@ class MainWindow(QMainWindow):
                             self.current_label.setText(f"<i>{text}</i>")
                             self.current_label.setStyleSheet("color: #94A3B8; font-style: italic; font-size: 18px; padding: 16px; background-color: #1E293B; border: 1px solid #334155; border-radius: 8px;")
                     elif msg_type == "translation":
+                        ui_display_time = time.time()
                         original = item.get("original", "")
                         translated = item.get("translated", "")
                         latency = item.get("latency", 0.0)
+                        timing = item.get("timing", {})
+
+                        # Log full pipeline timing if available
+                        if timing.get("recording_start") and timing.get("recording_stop"):
+                            rec_dur = timing["recording_stop"] - timing["recording_start"]
+                            trans_dur = timing.get("transcription_end", 0) - timing.get("transcription_start", 0) if timing.get("transcription_start") else 0
+                            tl_dur = timing.get("translation_end", 0) - timing.get("translation_start", 0) if timing.get("translation_start") else 0
+                            total = ui_display_time - timing["recording_stop"]
+                            status_tag = "[OK]" if total <= 2.0 else "[SLOW]"
+                            logger.info(
+                                f"[PIPELINE] Recording: {rec_dur:.2f}s | "
+                                f"Transcription: {trans_dur:.3f}s | "
+                                f"Translation: {tl_dur:.3f}s | "
+                                f"TOTAL (stop->display): {total:.3f}s {status_tag}"
+                            )
+
                         self._add_to_history(original, translated, latency)
-                        self._log_message(original, translated)
+                        self._log_message(original, translated, timing)
                         self._reset_ui_state()
                     elif msg_type == "cancel":
                         self._reset_ui_state()

@@ -1,5 +1,6 @@
 import multiprocessing
 import queue
+import time
 import logging
 import numpy as np
 import pyaudio
@@ -146,18 +147,31 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
     partial_start_index = 0
     is_recording = False
 
+    recording_start_ts = None
+    recording_stop_ts = None
+
     try:
         while True:
             # Check control queue for commands
             try:
                 cmd = control_queue.get_nowait()
-                if cmd == "QUIT":
+                # Extract command name and optional timestamp from tuple format
+                if isinstance(cmd, tuple) and len(cmd) == 2:
+                    cmd_name, cmd_ts = cmd
+                else:
+                    cmd_name = cmd
+                    cmd_ts = None
+
+                if cmd_name == "QUIT":
                     break
-                elif cmd == "START":
+                elif cmd_name == "START":
                     is_recording = True
+                    recording_start_ts = cmd_ts or time.time()
+                    recording_stop_ts = None
                     frames = []
                     frames_since_last_partial = 0
                     partial_start_index = 0
+                    logger.info("[AUDIO] Recording started")
                     try:
                         # Flush any stale audio from hardware buffer
                         while stream.get_read_available() > 0:
@@ -165,7 +179,16 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                     except Exception as e:
                         logger.warning(f"Buffer flush failed: {e}")
                 
-                elif cmd == "FINISH" and is_recording:
+                elif cmd_name == "FINISH" and is_recording:
+                    recording_stop_ts = cmd_ts or time.time()
+                    recording_duration = recording_stop_ts - recording_start_ts if recording_start_ts else 0
+                    logger.info(f"[AUDIO] Recording stopped (duration: {recording_duration:.2f}s)")
+
+                    timing = {
+                        "recording_start": recording_start_ts,
+                        "recording_stop": recording_stop_ts,
+                    }
+
                     # Clear any stale partials from the queue
                     while not asr_queue.empty():
                         try:
@@ -176,12 +199,12 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                     if frames:
                         audio_array = _process_audio_frames(frames, actual_rate)
                         try:
-                            asr_queue.put((audio_array, RATE, True), block=True, timeout=2.0)
+                            asr_queue.put((audio_array, RATE, True, timing), block=True, timeout=2.0)
                         except queue.Full:
                             logger.error("asr_queue full, dropped final audio chunk")
                     else:
                         try:
-                            asr_queue.put((np.array([], dtype=np.float32), RATE, True), block=True, timeout=2.0)
+                            asr_queue.put((np.array([], dtype=np.float32), RATE, True, timing), block=True, timeout=2.0)
                         except queue.Full:
                             logger.error("asr_queue full, dropped final empty chunk")
                             
@@ -189,10 +212,11 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                     frames_since_last_partial = 0
                     partial_start_index = 0
                     is_recording = False
+                    recording_start_ts = None
 
-                elif isinstance(cmd, tuple) and len(cmd) == 2 and cmd[0] == "SET_DEVICE":
+                elif cmd_name == "SET_DEVICE":
                     if not is_recording:
-                        new_device_index = cmd[1]
+                        new_device_index = cmd_ts
                         logger.info(f"Switching audio device to index {new_device_index}...")
                         try:
                             stream.stop_stream()

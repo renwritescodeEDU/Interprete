@@ -15,10 +15,10 @@ MAX_QUEUE_SIZE = 5
 PROCESS_JOIN_TIMEOUT = 3.0
 PROCESS_TERM_TIMEOUT = 1.0
 
-# Configure logging
+# Configure logging with millisecond precision
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    format='%(asctime)s.%(msecs)03d [%(levelname)s] %(name)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
