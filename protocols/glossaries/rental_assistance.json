@@ -1,0 +1,133 @@
+{
+  "industry_id": "rental_assistance",
+  "display_name": "Asistencia de Renta/Alquiler",
+  "detection_keywords_en": [
+    "rent",
+    "housing",
+    "Section 8",
+    "voucher",
+    "landlord",
+    "tenant",
+    "eviction",
+    "lease",
+    "apartment",
+    "shelter",
+    "HUD",
+    "subsidized",
+    "assistance",
+    "arrears",
+    "recertification",
+    "FHEPS"
+  ],
+  "detection_keywords_es": [
+    "alquiler",
+    "renta",
+    "vivienda",
+    "Sección 8",
+    "propietario",
+    "inquilino",
+    "desalojo",
+    "contrato",
+    "apartamento",
+    "refugio",
+    "subsidio",
+    "asistencia",
+    "desahucio",
+    "recertificación",
+    "vales"
+  ],
+  "terms": {
+    "311": "311 (línea de información y servicios no de emergencia de la ciudad)",
+    "adjusted income": "ingreso ajustado",
+    "affordable housing": "vivienda asequible",
+    "apartment": "apartamento / departamento",
+    "applicant": "solicitante",
+    "application": "solicitud",
+    "back rent": "alquiler atrasado / renta atrasada",
+    "case manager": "administrador de casos / manejador de caso",
+    "cash assistance": "ayuda con dinero en efectivo / asistencia monetaria",
+    "citizenship": "ciudadanía",
+    "criminal record": "registro criminal / antecedentes penales",
+    "disabilities": "discapacidades",
+    "disabled": "personas con discapacidad / discapacitados",
+    "elderly": "ancianos / personas mayores",
+    "eligibility": "elegibilidad",
+    "eligible": "elegible",
+    "emergency help": "ayuda de emergencia",
+    "eviction": "desalojo / desahucio",
+    "eviction history": "antecedentes de desahucio / desalojo",
+    "eviction notice": "aviso de desalojo / notificación de desahucio",
+    "fair market rent": "alquiler justo de mercado",
+    "family status": "estatus familiar",
+    "gross income": "ingreso bruto",
+    "household": "hogar / núcleo familiar",
+    "housing": "vivienda",
+    "housing choice voucher": "vales de elección de vivienda",
+    "housing voucher": "vale de vivienda",
+    "income qualifications": "condiciones de ingreso / requisitos de ingresos",
+    "inspector": "inspector",
+    "landlord": "propietario / casero",
+    "lease": "contrato de arrendamiento / contrato de alquiler",
+    "lease agreement": "contrato de arrendamiento",
+    "low-income": "de bajos ingresos",
+    "one shot deal": "programa One Shot Deal (ayuda de emergencia de pago único)",
+    "public housing": "vivienda pública",
+    "recertification": "recertificación",
+    "rent": "alquiler / renta",
+    "rent arrears": "alquileres atrasados / mora en el alquiler",
+    "rental assistance": "asistencia de renta / asistencia de alquiler",
+    "rental assistance supplement": "suplemento de asistencia de alquiler",
+    "residence status": "estatus de vivienda / residencia",
+    "section 8": "Sección 8",
+    "security deposit": "depósito de garantía / fianza",
+    "shelter": "refugio / albergue",
+    "subsidized housing": "vivienda subsidiada",
+    "tanf": "asistencia temporal para familias necesitadas",
+    "tenant": "inquilino / arrendatario",
+    "terminate lease": "rescindir el contrato de arrendamiento",
+    "utility allowance": "subsidio para servicios públicos",
+    "waiting list": "lista de espera"
+  },
+  "acronyms": {
+    "HUD": {
+      "full_en": "U.S. Department of Housing and Urban Development",
+      "es": "HUD (Departamento de Vivienda y Desarrollo Urbano de los Estados Unidos)"
+    },
+    "HRA": {
+      "full_en": "Human Resources Administration",
+      "es": "HRA (Administración de Recursos Humanos)"
+    },
+    "DSS": {
+      "full_en": "Department of Social Services",
+      "es": "DSS (Departamento de Servicios Sociales)"
+    },
+    "PHA": {
+      "full_en": "Public Housing Authority",
+      "es": "PHA (Autoridad de Vivienda Pública)"
+    },
+    "HCV": {
+      "full_en": "Housing Choice Voucher",
+      "es": "HCV (Vales de Elección de Vivienda)"
+    },
+    "DHS": {
+      "full_en": "Department of Homeless Services",
+      "es": "DHS (Departamento de Servicios para los Desamparados / Personas sin hogar)"
+    },
+    "CityFHEPS": {
+      "full_en": "City Fighting Homelessness and Eviction Prevention Supplement",
+      "es": "CityFHEPS (Suplemento de la Ciudad para la Prevención del Desahucio y la Falta de Vivienda)"
+    },
+    "FHEPS": {
+      "full_en": "Family Homelessness and Eviction Prevention Supplement",
+      "es": "FHEPS (Complemento para Familias sin Hogar y para la Prevención del Desahucio)"
+    },
+    "SSI": {
+      "full_en": "Supplemental Security Income",
+      "es": "SSI (Ingreso Suplementario del Seguro Social)"
+    },
+    "TANF": {
+      "full_en": "Temporary Assistance for Needy Families",
+      "es": "TANF (Asistencia Temporal para Familias Necesitadas)"
+    }
+  }
+}

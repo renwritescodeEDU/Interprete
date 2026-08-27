@@ -1,0 +1,121 @@
+{
+  "industry_id": "rideshare",
+  "display_name": "Viaje Compartido / Rideshare",
+  "detection_keywords_en": [
+    "rideshare",
+    "uber",
+    "lyft",
+    "driver",
+    "rider",
+    "passenger",
+    "app",
+    "ride",
+    "surge",
+    "deactivated",
+    "carpool",
+    "trip",
+    "fare",
+    "ping"
+  ],
+  "detection_keywords_es": [
+    "viaje compartido",
+    "conductor",
+    "pasajero",
+    "aplicación",
+    "viaje",
+    "tarifa",
+    "desactivado",
+    "chofer",
+    "solicitud",
+    "uber",
+    "lyft"
+  ],
+  "terms": {
+    "acceptance rate": "tarifa / tasa de aceptación / acordada",
+    "account deactivation": "desactivación de la cuenta",
+    "app": "aplicación",
+    "cancellation rating": "índice de cancelación",
+    "carpool": "viaje compartido en grupo / carpooling",
+    "deactivated": "desactivado",
+    "distracted driving": "conducción distraída / manejo distraído",
+    "driver": "conductor / chofer",
+    "driver in hour": "conductor / chofer por hora",
+    "drop-off": "punto de bajada / destino del pasajero",
+    "fare": "tarifa",
+    "hail": "llamar (la atención) con la mano / hacer la parada",
+    "hybrid policy": "póliza híbrida",
+    "independent contractor": "contratista independiente",
+    "livery": "vehículos de alquiler con conductor (taxis, limosinas y conductores de viajes compartidos)",
+    "long trip": "un largo viaje / un viaje largo",
+    "lyft plus": "Lyft Plus",
+    "mystro": "Mystro (aplicación para alternar entre plataformas de viajes compartidos)",
+    "passenger": "pasajero",
+    "pax": "pasajero",
+    "personal auto insurance policy": "póliza de seguro de automóvil personal",
+    "pickup": "recogida del pasajero",
+    "pickup location": "lugar de recogida",
+    "ping": "tintineo / sonido de alerta de solicitud de viaje",
+    "prime time": "horario estelar / de alta ocupación",
+    "private transportation company (ptc) license": "licencia de la compañía de transporte privado (PTC)",
+    "private transportation company license": "licencia de la compañía de transporte privado",
+    "rating": "clasificación / calificación",
+    "real-time ridesharing": "viaje compartido en tiempo real",
+    "ride": "viaje",
+    "rider": "pasajero / viajero",
+    "rideshare gap insurance": "seguro de brecha para viaje compartido",
+    "rideshare gps navigation device": "dispositivo de navegación GPS para viaje compartido",
+    "rideshare smartphones app": "aplicación de teléfono inteligente para viaje compartido",
+    "ridesharing company": "compañía de viajes compartidos",
+    "ridesharing coverage": "cobertura de viajes compartidos",
+    "ridesharing endorsement": "endoso / respaldo de viajes compartidos",
+    "surge": "sobrecarga / aumento de tarifa por alta demanda",
+    "surge pricing": "tarifa dinámica / tarifa por alta demanda",
+    "tip": "propina",
+    "tnc coverage deductible gap": "brecha del deducible en la cobertura de TNC",
+    "toll": "peaje",
+    "transportation network company": "compañía de la red de transporte",
+    "transportation network company (tnc)": "compañía de la red de transporte (TNC)",
+    "trip request": "solicitud de viaje",
+    "ubi (unified business identifier) number": "número UBI (identificador de compañía unificada)",
+    "ubi number": "número UBI (identificador de compañía unificada)",
+    "waybill": "hoja de ruta digital"
+  },
+  "acronyms": {
+    "TNC": {
+      "full_en": "Transportation Network Company",
+      "es": "TNC (Compañía de la red de transporte)"
+    },
+    "UBI": {
+      "full_en": "Unified Business Identifier",
+      "es": "UBI (Identificador de compañía unificada)"
+    },
+    "PAP": {
+      "full_en": "Personal Auto Policy",
+      "es": "PAP (Póliza de seguro de automóvil personal)"
+    },
+    "PIP": {
+      "full_en": "Personal Injury Protection",
+      "es": "PIP (Protección contra lesiones personales)"
+    },
+    "GPS": {
+      "full_en": "Global Positioning System",
+      "es": "GPS (Sistema de posicionamiento global)"
+    },
+    "PTC": {
+      "full_en": "Private Transportation Company",
+      "es": "PTC (Compañía de transporte privado)"
+    },
+    "PAX": {
+      "full_en": "Passenger",
+      "es": "PAX (Pasajero)"
+    },
+    "ISO": {
+      "full_en": "Insurance Services Office",
+      "es": "ISO (Oficina de Servicios de Seguros)"
+    },
+    "UM/UIM": {
+      "full_en": "Uninsured/Underinsured Motorist",
+      "es": "UM/UIM (Conductor sin seguro o con seguro insuficiente)"
+    }
+  }
+}

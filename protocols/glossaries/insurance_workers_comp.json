@@ -1,0 +1,154 @@
+{
+  "industry_id": "insurance_workers_comp",
+  "display_name": "Compensación Laboral",
+  "detection_keywords_en": [
+    "workers comp",
+    "workplace injury",
+    "occupational",
+    "light duty",
+    "nurse case manager",
+    "work-related",
+    "on the job",
+    "lost wages",
+    "rehabilitation benefits",
+    "death benefits",
+    "case manager",
+    "disability",
+    "stipend",
+    "lump sum",
+    "return to work",
+    "first report of injury",
+    "claimant"
+  ],
+  "detection_keywords_es": [
+    "compensación laboral",
+    "lesión laboral",
+    "ocupacional",
+    "trabajo ligero",
+    "enfermera",
+    "relacionado con el trabajo",
+    "indemnización laboral",
+    "salarios perdidos",
+    "administrador de caso",
+    "accidente de trabajo",
+    "incapacidad",
+    "estipendio",
+    "suma global",
+    "reincorporación laboral",
+    "primer informe de lesión",
+    "reclamante"
+  ],
+  "terms": {
+    "accidental means": "medios accidentales",
+    "adjuster": "ajustador / perito de seguros",
+    "audio issues": "problemas de audio",
+    "authorized treating physician": "médico tratante autorizado",
+    "bodily injury": "lesiones corporales",
+    "bodily injury from accidental means": "lesiones corporales por medios accidentales",
+    "case manager": "administrador(a) de caso / gerente de caso",
+    "claim": "reclamación / reclamo de compensación laboral",
+    "claim file": "expediente de la reclamación",
+    "claimant": "reclamante / solicitante",
+    "compensation": "indemnización / compensación",
+    "dangerous work conditions": "condiciones laborales peligrosas",
+    "death": "fallecimiento / muerte",
+    "death benefits": "beneficios por fallecimiento / prestaciones por defunción",
+    "disability": "incapacidad / discapacidad",
+    "disability rating": "calificación de incapacidad / porcentaje de discapacidad",
+    "disabled on the job": "incapacitado en el trabajo",
+    "employee": "empleado / trabajador",
+    "employer": "empleador / patrón",
+    "first report of injury": "primer informe de la lesión / reporte inicial del accidente",
+    "functional capacity evaluation": "evaluación de la capacidad funcional",
+    "hazards": "peligros / riesgos laborales",
+    "impairment rating": "calificación de deterioro físico / grado de menoscabo",
+    "income replacement benefits": "beneficios de reemplazo de ingresos",
+    "independent medical examination": "examen médico independiente",
+    "injured in the course of employment": "lesionado en el curso del empleo",
+    "injured on the job": "lesionado en el trabajo",
+    "injured worker": "trabajador lesionado",
+    "injury": "lesión",
+    "light duty": "trabajo ligero / tareas livianas",
+    "light-duty": "trabajo ligero / tareas livianas",
+    "limited english proficient": "persona con dominio limitado del inglés",
+    "lost wages": "salarios perdidos / salarios no devengados",
+    "lump sum": "suma global / suma total",
+    "maximum medical improvement": "mejoría médica máxima",
+    "medical benefits": "beneficios médicos / prestaciones médicas",
+    "medical bills": "facturas médicas / cuentas médicas",
+    "medical records": "historial médico / registros médicos",
+    "modified duty": "labores modificadas / funciones adaptadas",
+    "no additions, no omissions": "sin adiciones ni omisiones",
+    "nurse case manager": "enfermera administradora de caso / enfermera gerente de caso",
+    "occupational disease": "enfermedad ocupacional / enfermedad profesional",
+    "occupational diseases": "enfermedades ocupacionales / enfermedades profesionales",
+    "on-the-job injury": "lesión en el trabajo / lesión laboral",
+    "permanent partial disability": "incapacidad parcial permanente",
+    "permanent total disability": "incapacidad total permanente",
+    "physical conditions unique to the occupation": "condiciones físicas propias de la ocupación",
+    "physical therapy": "terapia física / fisioterapia",
+    "pre-injury wages": "salarios anteriores a la lesión",
+    "rehabilitation benefits": "beneficios de rehabilitación",
+    "recorded statement": "declaración grabada",
+    "return to work": "regreso al trabajo / reincorporación laboral",
+    "return-to-work program": "programa de reincorporación al trabajo",
+    "second opinion": "segunda opinión médica",
+    "sedentary work": "trabajo sedentario",
+    "settlement": "acuerdo / liquidación",
+    "stipend": "estipendio",
+    "temporary partial disability": "incapacidad parcial temporal",
+    "temporary total disability": "incapacidad total temporal",
+    "treating physician": "médico tratante",
+    "vocational rehabilitation": "rehabilitación vocacional",
+    "wage replacement": "reemplazo de salarios",
+    "work restrictions": "restricciones de trabajo / restricciones laborales",
+    "work-related": "relacionado con el trabajo",
+    "work-related covered losses": "pérdidas cubiertas relacionadas con el trabajo",
+    "work-related injury": "lesión relacionada con el trabajo",
+    "worker's comp": "indemnización laboral / compensación de los trabajadores",
+    "workers compensation": "indemnización laboral / compensación de los trabajadores",
+    "workplace injury": "lesión en el lugar de trabajo"
+  },
+  "acronyms": {
+    "FCE": {
+      "full_en": "Functional Capacity Evaluation",
+      "es": "FCE (Evaluación de la Capacidad Funcional)"
+    },
+    "IME": {
+      "full_en": "Independent Medical Examination",
+      "es": "IME (Examen Médico Independiente)"
+    },
+    "LEP": {
+      "full_en": "Limited English Proficient",
+      "es": "LEP (Persona con Dominio Limitado del Inglés)"
+    },
+    "MMI": {
+      "full_en": "Maximum Medical Improvement",
+      "es": "MMI (Mejoría Médica Máxima)"
+    },
+    "NCM": {
+      "full_en": "Nurse Case Manager",
+      "es": "NCM (Enfermera Administradora de Caso)"
+    },
+    "PPD": {
+      "full_en": "Permanent Partial Disability",
+      "es": "PPD (Incapacidad Parcial Permanente)"
+    },
+    "PTD": {
+      "full_en": "Permanent Total Disability",
+      "es": "PTD (Incapacidad Total Permanente)"
+    },
+    "TPD": {
+      "full_en": "Temporary Partial Disability",
+      "es": "TPD (Incapacidad Parcial Temporal)"
+    },
+    "TTD": {
+      "full_en": "Temporary Total Disability",
+      "es": "TTD (Incapacidad Total Temporal)"
+    },
+    "WC": {
+      "full_en": "Workers' Compensation",
+      "es": "WC (Indemnización/Compensación Laboral)"
+    }
+  }
+}

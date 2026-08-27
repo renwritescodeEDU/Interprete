@@ -1,0 +1,377 @@
+{
+  "industry_id": "acronyms_master",
+  "display_name": "Acrónimos Maestros",
+  "detection_keywords_en": [],
+  "detection_keywords_es": [],
+  "terms": {},
+  "acronyms": {
+    "ABA": {
+      "full_en": "Applied Behaviour Analysis",
+      "es": "ACA (Análisis Conductual Aplicado)"
+    },
+    "ACA": {
+      "full_en": "Affordable Care Act",
+      "es": "ACA (Ley de Cuidado de Salud Asequible)"
+    },
+    "ACH": {
+      "full_en": "Automated Clearing House",
+      "es": "ACH (Cámara de Compensación Automatizada)"
+    },
+    "ACV": {
+      "full_en": "Actual Cash Value",
+      "es": "ACV (Valor Actual Efectivo)"
+    },
+    "AD": {
+      "full_en": "Advance Directives",
+      "es": "AD (Directivas Anticipadas)"
+    },
+    "AD&D": {
+      "full_en": "Accidental Death and Dismemberment",
+      "es": "AD&D (Muerte y Desmembramiento Accidental)"
+    },
+    "ADHD": {
+      "full_en": "Attention Deficit Hyperactivity Disorder",
+      "es": "TDAH (Trastorno de Déficit de Atención e Hiperactividad)"
+    },
+    "APR": {
+      "full_en": "Annual Percentage Rate",
+      "es": "TAP (Tasa Anual de Porcentaje)"
+    },
+    "ARM": {
+      "full_en": "Adjustable-Rate Mortgage",
+      "es": "ARM (Hipoteca de Tasa Ajustable)"
+    },
+    "ATM": {
+      "full_en": "Automated Teller Machine",
+      "es": "ATM (Cajero Automático)"
+    },
+    "BIP": {
+      "full_en": "Behavior Intervention Plan",
+      "es": "BIP (Plan de Intervención para el Comportamiento)"
+    },
+    "BP": {
+      "full_en": "Blood Pressure",
+      "es": "TA (Tensión Arterial)"
+    },
+    "CARES": {
+      "full_en": "Coronavirus Aid, Relief, and Economic Security Act",
+      "es": "Ley CARES (Ley de Ayuda, Alivio y Seguridad Económica por Coronavirus)"
+    },
+    "CARES Act": {
+      "full_en": "Coronavirus Aid, Relief, and Economic Security Act",
+      "es": "Ley CARES (Ley de Ayuda, Alivio y Seguridad Económica por Coronavirus)"
+    },
+    "CBC": {
+      "full_en": "Complete Blood Count",
+      "es": "CSC (Conteo Sanguíneo Completo)"
+    },
+    "CD": {
+      "full_en": "Certificate of Deposit",
+      "es": "CD (Certificado de Depósito)"
+    },
+    "CHIP": {
+      "full_en": "Children's Health Insurance Program",
+      "es": "CHIP (Programa de Seguro Médico para Niños)"
+    },
+    "CIP": {
+      "full_en": "Customer Identification Program",
+      "es": "CIP (Programa de Identificación del Cliente)"
+    },
+    "COFI": {
+      "full_en": "Cost of Funds Index",
+      "es": "COFI (Índice de Costo de los Fondos)"
+    },
+    "CPR": {
+      "full_en": "Cardiopulmonary Resuscitation",
+      "es": "RCP (Reanimación Cardiopulmonar)"
+    },
+    "CRD": {
+      "full_en": "Coronavirus-Related Distribution",
+      "es": "CRD (Distribución Relacionada con el Coronavirus)"
+    },
+    "CRV": {
+      "full_en": "Certificate of Reasonable Value",
+      "es": "CRV (Certificado de Valor Razonable)"
+    },
+    "CT": {
+      "full_en": "Computed Tomography",
+      "es": "TAC (Tomografía Axial Computarizada)"
+    },
+    "DHS": {
+      "full_en": "Department of Homeless Services",
+      "es": "DHS (Departamento de Servicios para Personas sin Hogar)"
+    },
+    "DME": {
+      "full_en": "Durable Medical Equipment",
+      "es": "EMD (Equipo Médico Duradero)"
+    },
+    "DNR": {
+      "full_en": "Do Not Resuscitate",
+      "es": "ONR (Orden de No Reanimar)"
+    },
+    "DOB": {
+      "full_en": "Date of Birth",
+      "es": "DOB (Fecha de Nacimiento)"
+    },
+    "DPC": {
+      "full_en": "Dual Party Consent",
+      "es": "DPC (Consentimiento de Ambas Partes)"
+    },
+    "DSS": {
+      "full_en": "Department of Social Services",
+      "es": "DSS (Departamento de Servicios Sociales)"
+    },
+    "DTP": {
+      "full_en": "Diphtheria, Tetanus, Pertussis",
+      "es": "DTP (Difteria, Tétanos, Tos ferina)"
+    },
+    "EBT": {
+      "full_en": "Electronic Benefits Transfer",
+      "es": "EBT (Transferencia Electrónica de Beneficios)"
+    },
+    "ECG": {
+      "full_en": "Electrocardiogram",
+      "es": "ECG (Electrocardiograma)"
+    },
+    "ECOA": {
+      "full_en": "Equal Credit Opportunity Act",
+      "es": "ECOA (Ley de Igualdad de Oportunidades de Crédito)"
+    },
+    "EEG": {
+      "full_en": "Electroencephalogram",
+      "es": "EEG (Electroencefalograma)"
+    },
+    "EFT": {
+      "full_en": "Electronic Funds Transfer",
+      "es": "TEF (Transferencia Electrónica de Fondos)"
+    },
+    "EKG": {
+      "full_en": "Electrocardiogram",
+      "es": "ECG (Electrocardiograma)"
+    },
+    "EPO": {
+      "full_en": "Exclusive Provider Organization",
+      "es": "EPO (Organización de Proveedores Exclusivos)"
+    },
+    "ER": {
+      "full_en": "Emergency Room",
+      "es": "ER (Sala de Emergencias)"
+    },
+    "ESRD": {
+      "full_en": "End-Stage Renal Disease",
+      "es": "ESRD (Enfermedad Renal en Etapa Terminal)"
+    },
+    "ESY": {
+      "full_en": "Extended School Year",
+      "es": "ESY (Servicios del Año Escolar Extendido)"
+    },
+    "FCRA": {
+      "full_en": "Fair Credit Reporting Act",
+      "es": "FCRA (Ley de Información Crediticia Equitativa)"
+    },
+    "FHA": {
+      "full_en": "Federal Housing Administration",
+      "es": "FHA (Administración Federal de la Vivienda)"
+    },
+    "FNMA": {
+      "full_en": "Federal National Mortgage Association (Fannie Mae)",
+      "es": "FNMA (Asociación Nacional Federal de Hipotecas)"
+    },
+    "GNMA": {
+      "full_en": "Government National Mortgage Association (Ginnie Mae)",
+      "es": "GNMA (Asociación Nacional de Hipotecas del Gobierno)"
+    },
+    "GPS": {
+      "full_en": "Global Positioning System",
+      "es": "GPS (Sistema de Posicionamiento Global)"
+    },
+    "HCV": {
+      "full_en": "Housing Choice Voucher",
+      "es": "HCV (Vale de Elección de Vivienda)"
+    },
+    "HECM": {
+      "full_en": "Home Equity Conversion Mortgage",
+      "es": "HECM (Hipoteca de Conversión de Plusvalía)"
+    },
+    "HELOC": {
+      "full_en": "Home Equity Line of Credit",
+      "es": "HELOC (Línea de Crédito sobre la Plusvalía)"
+    },
+    "HHS": {
+      "full_en": "Department of Health and Human Services",
+      "es": "HHS (Departamento de Salud y Servicios Humanos)"
+    },
+    "HIPP": {
+      "full_en": "Health Insurance Premium Payment",
+      "es": "HIPP (Programa de Pago de Primas del Seguro Médico)"
+    },
+    "HIV": {
+      "full_en": "Human Immunodeficiency Virus",
+      "es": "VIH (Virus de Inmunodeficiencia Humana)"
+    },
+    "HMO": {
+      "full_en": "Health Maintenance Organization",
+      "es": "HMO (Organización para el Mantenimiento de la Salud)"
+    },
+    "HPV": {
+      "full_en": "Human Papillomavirus",
+      "es": "VPH (Virus del Papiloma Humano)"
+    },
+    "HRA": {
+      "full_en": "Healthcare Reimbursement Arrangement",
+      "es": "HRA (Acuerdo de Reembolso de Gastos Médicos)"
+    },
+    "HSA": {
+      "full_en": "Health Savings Account",
+      "es": "HSA (Cuenta de Ahorros para la Salud)"
+    },
+    "HUD": {
+      "full_en": "Department of Housing and Urban Development",
+      "es": "HUD (Departamento de Vivienda y Desarrollo Urbano)"
+    },
+    "ICU": {
+      "full_en": "Intensive Care Unit",
+      "es": "UCI (Unidad de Cuidados Intensivos)"
+    },
+    "IDEA": {
+      "full_en": "Individuals with Disabilities Education Act",
+      "es": "IDEA (Ley de Educación para Personas con Discapacidades)"
+    },
+    "IEP": {
+      "full_en": "Individualized Education Program",
+      "es": "PEI (Programa de Educación Individualizada)"
+    },
+    "IPV": {
+      "full_en": "Inactive Polio Vaccine",
+      "es": "IPV (Vacuna Antipoliomielítica Inactivada)"
+    },
+    "LEP": {
+      "full_en": "Limited English Proficient",
+      "es": "LEP (Persona con Dominio Limitado del Inglés)"
+    },
+    "LRE": {
+      "full_en": "Least Restrictive Environment",
+      "es": "LRE (Ambiente Menos Restrictivo)"
+    },
+    "LTV": {
+      "full_en": "Loan-to-Value",
+      "es": "LTV (Relación Préstamo-Valor)"
+    },
+    "MI": {
+      "full_en": "Mortgage Insurance",
+      "es": "MI (Seguro Hipotecario)"
+    },
+    "MIP": {
+      "full_en": "Mortgage Insurance Premium",
+      "es": "MIP (Prima del Seguro Hipotecario)"
+    },
+    "MMR": {
+      "full_en": "Measles, Mumps, Rubella",
+      "es": "MMR (Sarampión, Paperas, Rubéola)"
+    },
+    "MRI": {
+      "full_en": "Magnetic Resonance Imaging",
+      "es": "IRM (Imagen por Resonancia Magnética)"
+    },
+    "MRN": {
+      "full_en": "Medical Record Number",
+      "es": "MRN (Número de Expediente Médico)"
+    },
+    "NCM": {
+      "full_en": "Nurse Case Manager",
+      "es": "NCM (Enfermera Administradora de Caso)"
+    },
+    "OTC": {
+      "full_en": "Over-the-Counter",
+      "es": "OTC (De Venta Libre/Sin Receta)"
+    },
+    "PCP": {
+      "full_en": "Primary Care Physician",
+      "es": "PCP (Médico de Atención Primaria)"
+    },
+    "PHA": {
+      "full_en": "Public Housing Authority",
+      "es": "PHA (Autoridad de Vivienda Pública)"
+    },
+    "PIP": {
+      "full_en": "Personal Injury Protection",
+      "es": "PIP (Protección contra Lesiones Personales)"
+    },
+    "PITI": {
+      "full_en": "Principal, Interest, Taxes, Insurance",
+      "es": "PITI (Capital, Intereses, Impuestos y Seguro)"
+    },
+    "PMI": {
+      "full_en": "Private Mortgage Insurance",
+      "es": "PMI (Seguro Hipotecario Privado)"
+    },
+    "PPO": {
+      "full_en": "Preferred Provider Organization",
+      "es": "PPO (Organización de Proveedores Preferidos)"
+    },
+    "RESPA": {
+      "full_en": "Real Estate Settlement Procedures Act",
+      "es": "RESPA (Ley de Procedimientos de Liquidación de Bienes Raíces)"
+    },
+    "SEP": {
+      "full_en": "Special Enrollment Period",
+      "es": "PEI (Período Especial de Inscripción)"
+    },
+    "SNAP": {
+      "full_en": "Supplemental Nutrition Assistance Program",
+      "es": "SNAP (Programa de Asistencia de Nutrición Suplementaria)"
+    },
+    "SSI": {
+      "full_en": "Supplemental Security Income",
+      "es": "SSI (Ingreso Suplementario del Seguro Social)"
+    },
+    "SSN": {
+      "full_en": "Social Security Number",
+      "es": "NSS (Número de Seguro Social)"
+    },
+    "STD": {
+      "full_en": "Sexually Transmitted Disease",
+      "es": "ETS (Enfermedad de Transmisión Sexual)"
+    },
+    "TANF": {
+      "full_en": "Temporary Assistance for Needy Families",
+      "es": "TANF (Asistencia Temporal para Familias Necesitadas)"
+    },
+    "TCPA": {
+      "full_en": "Telephone Consumer Protection Act",
+      "es": "TCPA (Ley de Protección al Consumidor Telefónico)"
+    },
+    "TILA": {
+      "full_en": "Truth-in-Lending Act",
+      "es": "TILA (Ley de Veracidad en Préstamos)"
+    },
+    "TNC": {
+      "full_en": "Transportation Network Company",
+      "es": "TNC (Compañía de la Red de Transporte)"
+    },
+    "UIM": {
+      "full_en": "Underinsured Motorist",
+      "es": "UIM (Conductor con Seguro Insuficiente)"
+    },
+    "UM": {
+      "full_en": "Uninsured Motorist",
+      "es": "UM (Conductor sin Seguro)"
+    },
+    "VA": {
+      "full_en": "Veterans Administration",
+      "es": "VA (Administración de Asuntos de los Veteranos)"
+    },
+    "VIN": {
+      "full_en": "Vehicle Identification Number",
+      "es": "VIN (Número de Identificación Vehicular)"
+    },
+    "WC": {
+      "full_en": "Workers Compensation",
+      "es": "WC (Indemnización/Compensación Laboral)"
+    },
+    "WIC": {
+      "full_en": "Women, Infants and Children",
+      "es": "WIC (Programa para Mujeres, Bebés y Niños)"
+    }
+  }
+}

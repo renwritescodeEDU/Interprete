@@ -1,0 +1,251 @@
+{
+  "industry_id": "insurance_health",
+  "display_name": "Seguro de Salud",
+  "detection_keywords_en": [
+    "health insurance",
+    "medical insurance",
+    "copay",
+    "coinsurance",
+    "HMO",
+    "PPO",
+    "enrollment",
+    "Medicaid",
+    "Medicare",
+    "CHIP",
+    "coverage",
+    "premium",
+    "deductible",
+    "network",
+    "provider",
+    "plan",
+    "out-of-pocket",
+    "referral",
+    "open enrollment",
+    "marketplace",
+    "formulary",
+    "claim",
+    "specialist"
+  ],
+  "detection_keywords_es": [
+    "seguro médico",
+    "seguro de salud",
+    "copago",
+    "coseguro",
+    "inscripción",
+    "Medicaid",
+    "Medicare",
+    "cobertura",
+    "prima",
+    "deducible",
+    "red",
+    "proveedor",
+    "plan",
+    "gastos de bolsillo",
+    "referido",
+    "derivación",
+    "período de inscripción",
+    "médico de cabecera",
+    "especialista"
+  ],
+  "terms": {
+    "accidental death and dismemberment": "muerte y desmembramiento accidental",
+    "advance premium tax credit": "crédito tributario anticipado para la prima",
+    "affordable care act": "ley de cuidado de salud asequible",
+    "annual out-of-pocket maximum": "límite máximo anual de gastos de bolsillo",
+    "benefits and exclusions": "beneficios y exclusiones",
+    "brand-name drug": "medicamento de marca",
+    "broker": "intermediario / corredor de seguros",
+    "bronze plan": "plan bronce",
+    "bronze, silver, gold, and platinum plans": "planes bronce, plata, oro y platino",
+    "catastrophic coverage": "cobertura catastrófica",
+    "catastrophic health plan": "plan de salud catastrófico",
+    "centers for medicare & medicaid services": "centros de servicios de medicare y medicaid",
+    "children health insurance program": "programa de seguro médico para niños",
+    "chip": "programa de seguro médico para niños (CHIP)",
+    "claim": "reclamación / reclamo médico",
+    "coinsurance": "coseguro",
+    "copay": "copago",
+    "copayment": "copago",
+    "cost sharing": "costo compartido",
+    "coverage": "cobertura",
+    "coverage gap": "brecha de cobertura",
+    "coverage options": "opciones de cobertura",
+    "deductible": "deducible",
+    "dental coverage": "cobertura dental",
+    "dental, vision & hearing coverage": "cobertura dental, de visión y audición",
+    "dependent": "dependiente",
+    "dialysis": "diálisis",
+    "disabilities": "discapacidades",
+    "doctor's visits": "visitas al médico / consultas médicas",
+    "durable medical equipment": "equipo médico duradero",
+    "effective date": "fecha de vigencia",
+    "elderly adults": "adultos mayores",
+    "emergency room": "sala de emergencias",
+    "end-stage renal disease": "enfermedad renal en etapa terminal",
+    "enrollment": "inscripción / afiliación",
+    "essential health benefits": "beneficios de salud esenciales",
+    "exclusive provider organization": "organización de proveedores exclusivos",
+    "explanation of benefits": "explicación de beneficios",
+    "federal poverty level": "nivel federal de pobreza",
+    "flexible spending account": "cuenta de gastos flexibles",
+    "formulary": "formulario de medicamentos / lista de medicamentos cubiertos",
+    "generic drug": "medicamento genérico",
+    "gold plan": "plan oro",
+    "health insurance": "seguro de salud / seguro médico",
+    "health insurance exchange": "bolsa de seguros médicos / intercambio de seguros médicos",
+    "health insurance marketplace": "mercado de seguros médicos",
+    "health maintenance organization": "organización para el mantenimiento de la salud",
+    "health savings account": "cuenta de ahorros para la salud",
+    "healthcare insurance": "seguro de salud / seguro médico",
+    "healthcare reimbursement arrangement": "acuerdo de reembolso de gastos médicos",
+    "hearing coverage": "cobertura auditiva",
+    "hmo": "organización para el mantenimiento de la salud (HMO)",
+    "home health care": "atención médica en el hogar",
+    "hospice care": "cuidados de hospicio / cuidados paliativos",
+    "in-network": "dentro de la red",
+    "in-network provider": "proveedor dentro de la red",
+    "inpatient care": "atención para pacientes hospitalizados",
+    "inpatient coverage": "cobertura para pacientes hospitalizados / cobertura de internación",
+    "long-term care": "cuidado a largo plazo",
+    "long-term disability": "discapacidad a largo plazo",
+    "low-income families": "familias de bajos ingresos",
+    "mail-order pharmacy": "farmacia de pedido por correo",
+    "maintenance medication": "medicamento de mantenimiento",
+    "maximum out-of-pocket": "desembolso máximo de bolsillo",
+    "medi-cal": "medi-cal (medicaid en california)",
+    "medicaid": "medicaid",
+    "medical expenses": "gastos médicos",
+    "medical necessity": "necesidad médica",
+    "medicare": "medicare",
+    "medicare advantage": "medicare advantage",
+    "medicare advantage plans": "planes medicare advantage",
+    "medicare part a": "medicare parte a (cobertura hospitalaria)",
+    "medicare part b": "medicare parte b (cobertura médica)",
+    "medicare part c": "medicare parte c (medicare advantage)",
+    "medicare part d": "medicare parte d (medicamentos recetados)",
+    "network": "red de proveedores",
+    "open enrollment": "período de inscripción abierta",
+    "open enrollment period": "período de inscripción abierta",
+    "oregon health plan": "plan de salud de oregon",
+    "out-of-network": "fuera de la red",
+    "out-of-network coverage": "cobertura fuera de la red",
+    "out-of-network provider": "proveedor fuera de la red",
+    "out-of-pocket": "gastos de bolsillo",
+    "out-of-pocket cost": "costo de bolsillo",
+    "out-of-pocket maximum": "límite máximo de gastos de bolsillo",
+    "outpatient care": "atención ambulatoria",
+    "outpatient coverage": "cobertura para pacientes ambulatorios",
+    "pharmacy benefit manager": "administrador de beneficios farmacéuticos",
+    "platinum plan": "plan platino",
+    "policyholder": "titular de la póliza / asegurado",
+    "ppo": "organización de proveedores preferidos (PPO)",
+    "pre-existing condition": "condición preexistente",
+    "preferred provider organization": "organización de proveedores preferidos",
+    "premium": "prima",
+    "premium tax credit": "crédito tributario para la prima",
+    "prescription drug": "medicamento con receta / fármaco recetado",
+    "prescription drug coverage": "cobertura de medicamentos recetados",
+    "primary care physician": "médico de atención primaria / médico de cabecera",
+    "prior authorization": "autorización previa / preautorización",
+    "provider": "proveedor de atención médica",
+    "provider network": "red de proveedores",
+    "qualified health plan": "plan de salud calificado",
+    "qualifying life event": "evento de vida calificado",
+    "referral": "referido / derivación",
+    "referrals for specialists": "derivaciones a especialistas",
+    "silver plan": "plan plata",
+    "skilled nurses services": "servicios de enfermería especializada",
+    "skilled nursing facility": "centro de enfermería especializada",
+    "special enrollment period": "período especial de inscripción",
+    "specialist": "especialista",
+    "specialty drug": "medicamento de especialidad",
+    "subsidy": "subsidio",
+    "supplemental insurance": "seguro suplementario / seguro complementario",
+    "supplemental retirement plan": "plan de jubilación/retiro suplementario",
+    "tenncare": "tenncare (medicaid en tennessee)",
+    "transplant": "trasplante",
+    "uninsured children": "niños sin seguro médico",
+    "urgent care": "atención de urgencias",
+    "vendor": "proveedor / suministrador",
+    "vision coverage": "cobertura de visión",
+    "vision service plan": "plan de seguro de visión"
+  },
+  "acronyms": {
+    "ACA": {
+      "full_en": "Affordable Care Act",
+      "es": "ACA (Ley de Cuidado de Salud Asequible)"
+    },
+    "AD&D": {
+      "full_en": "Accidental Death and Dismemberment",
+      "es": "AD&D (Muerte y Desmembramiento Accidental)"
+    },
+    "APTC": {
+      "full_en": "Advance Premium Tax Credit",
+      "es": "APTC (Crédito Tributario Anticipado para la Prima)"
+    },
+    "CHIP": {
+      "full_en": "Children's Health Insurance Program",
+      "es": "CHIP (Programa de Seguro Médico para Niños)"
+    },
+    "CMS": {
+      "full_en": "Centers for Medicare & Medicaid Services",
+      "es": "CMS (Centros de Servicios de Medicare y Medicaid)"
+    },
+    "DME": {
+      "full_en": "Durable Medical Equipment",
+      "es": "EMD (Equipo Médico Duradero)"
+    },
+    "EOB": {
+      "full_en": "Explanation of Benefits",
+      "es": "EOB (Explicación de Beneficios)"
+    },
+    "EPO": {
+      "full_en": "Exclusive Provider Organization",
+      "es": "EPO (Organización de Proveedores Exclusivos)"
+    },
+    "ESRD": {
+      "full_en": "End-Stage Renal Disease",
+      "es": "ESRD (Enfermedad Renal en Etapa Terminal)"
+    },
+    "FPL": {
+      "full_en": "Federal Poverty Level",
+      "es": "FPL (Nivel Federal de Pobreza)"
+    },
+    "FSA": {
+      "full_en": "Flexible Spending Account",
+      "es": "FSA (Cuenta de Gastos Flexibles)"
+    },
+    "HMO": {
+      "full_en": "Health Maintenance Organization",
+      "es": "HMO (Organización para el Mantenimiento de la Salud)"
+    },
+    "HRA": {
+      "full_en": "Healthcare Reimbursement Arrangement",
+      "es": "HRA (Acuerdo de Reembolso de Gastos Médicos)"
+    },
+    "HSA": {
+      "full_en": "Health Savings Account",
+      "es": "HSA (Cuenta de Ahorros para la Salud)"
+    },
+    "PCP": {
+      "full_en": "Primary Care Physician",
+      "es": "PCP (Médico de Atención Primaria)"
+    },
+    "PPO": {
+      "full_en": "Preferred Provider Organization",
+      "es": "PPO (Organización de Proveedores Preferidos)"
+    },
+    "QHP": {
+      "full_en": "Qualified Health Plan",
+      "es": "QHP (Plan de Salud Calificado)"
+    },
+    "SEP": {
+      "full_en": "Special Enrollment Period",
+      "es": "PEI (Período Especial de Inscripción)"
+    },
+    "VSP": {
+      "full_en": "Vision Service Plan",
+      "es": "VSP (Plan de Seguro de Visión)"
+    }
+  }
+}
