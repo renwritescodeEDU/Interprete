@@ -13,6 +13,9 @@ BEAM_SIZE = 5
 SUPPORTED_LANGUAGES = {"en", "es"}
 TIMEOUT_PUT = 5.0
 TIMEOUT_GET = 1.0
+# Minimum probability for language detection to be trusted.
+# Fragments below this threshold are discarded to avoid inverted translations.
+LANGUAGE_CONFIDENCE_THRESHOLD = 0.60
 
 PROMPT_ES = "Hola. Esta es una transcripción en español perfecta, con excelente ortografía, puntuación y gramática."
 PROMPT_EN = "Hello. This is a perfect English transcription, with excellent spelling, punctuation, and grammar."
@@ -79,12 +82,23 @@ def start_transcriber(
             )
             
             detected_language = info.language
+            language_probability = info.language_probability
             
             # Guard clause: Unsupported language
             if detected_language not in SUPPORTED_LANGUAGES:
                 if is_final:
                     detected_language = None
                     _send_to_queue(ui_queue, {"type": "cancel"})
+                continue
+
+            # Guard clause: Low confidence — drop to avoid inverted translations
+            if is_final and language_probability < LANGUAGE_CONFIDENCE_THRESHOLD:
+                logger.warning(
+                    f"[TRANSCRIBER] Discarding low-confidence fragment "
+                    f"(lang='{detected_language}', prob={language_probability:.2f} < {LANGUAGE_CONFIDENCE_THRESHOLD})"
+                )
+                detected_language = None
+                _send_to_queue(ui_queue, {"type": "cancel"})
                 continue
 
             text = "".join(segment.text for segment in segments).strip()

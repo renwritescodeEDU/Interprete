@@ -14,33 +14,57 @@ logger = logging.getLogger(__name__)
 LLM_MODEL = "qwen2.5:3b"
 CONTEXT_LIMIT = 5
 
-TRANSLATION_PROMPT_TEMPLATE = """You are a professional simultaneous interpreter API for live customer service calls.
-Translate the {source_lang} text below to {target_lang}. Output ONLY valid JSON: {{"translation": "..."}}
+TRANSLATION_PROMPT_TEMPLATE = """\
+<task>Simultaneous interpreter for live professional calls. {source_lang} → {target_lang}.</task>
 
-MANDATORY RULES:
-1. Use FORMAL register: "usted/su/le" in Spanish, NEVER "tú/tu/te" unless the original speaker uses informal.
-2. Translate ALL compound terms naturally: "mother-in-law"="suegra", "checking account"="cuenta corriente", "father-in-law"="suegro", "daughter-in-law"="nuera", "brother-in-law"="cuñado".
-3. For acronyms: write the Spanish acronym with full meaning in parentheses on first use. Example: "CD" → "CD (Certificado de Depósito)", "APR" → "TAP (Tasa Anual de Porcentaje)".
-4. NEVER leave English words untranslated except proper nouns and brand names.
-5. Respect grammatical gender: "un diagnóstico" (masc), "una receta" (fem), "el saldo" (masc).
-6. Preserve exact numbers, dates, account numbers, and alphanumeric codes unchanged.
-7. Punctuate perfectly with commas and periods for smooth read-aloud delivery.
-8. "anyone else besides" = "alguien más aparte de" (NOT "nadie más que").
-9. "debited" = "debitado/descontado" (NOT "debilitado").
-10. "I need to know if" = "Necesito saber si" (followed by positive construction, NOT double negative).
+<rules>
+REGISTER: Always use formal address. In Spanish: "usted/su/le/él/ella" NEVER "tú/tu/te".
+COMPLETENESS: Translate EVERY word. Never omit, summarize, or paraphrase. Keep all numbers, dates, codes, phone numbers unchanged.
+ACCURACY: Translate compound terms correctly. Examples: mother-in-law=suegra, checking account=cuenta corriente, child support=manutención de menores, food stamps=cupones de alimento (SNAP), alley=callejón, dumpster=contenedor de basura, non-payment=falta de pago / impago.
+ACRONYMS: First use → expand with Spanish meaning in parentheses. Example: APR → TAP (Tasa Anual de Porcentaje).
+SPEAKER NOTE: {speaker_note}
+</rules>
 
 {glossary_section}
 
-Conversation context:
+<context>
 {context_str}
+</context>
 
-Translate this text:
+<text_to_translate>
 {text}
-"""
+</text_to_translate>
+
+Output ONLY valid JSON with key "translation". No extra text."""
+
+
+def _detect_same_language(text: str, target_lang: str) -> bool:
+    """
+    Quick heuristic: if we're supposed to translate TO Spanish but the text
+    looks Spanish, or vice versa, skip translation to prevent re-translations.
+    Uses high-frequency function words as a signal.
+    """
+    text_lower = text.lower()
+    spanish_markers = {"el ", "la ", "los ", "las ", "que ", "de ", "en ", "con ", " es ", " y ", " no ", " un ", " una "}
+    english_markers = {"the ", "and ", "to ", "of ", "is ", "in ", "that ", "it ", "for ", "was "}
+
+    spanish_score = sum(1 for m in spanish_markers if m in text_lower)
+    english_score = sum(1 for m in english_markers if m in text_lower)
+
+    detected_is_spanish = spanish_score > english_score
+
+    if target_lang == "Spanish" and detected_is_spanish:
+        return True   # text is already Spanish, don't re-translate
+    if target_lang == "English" and not detected_is_spanish and english_score > 0:
+        return True   # text is already English, don't re-translate
+    return False
+
+
 
 
 def translate_ollama(text: str, source_lang: str, target_lang: str,
-                     context_history: list, glossary_manager=None) -> tuple:
+                     context_history: list, glossary_manager=None,
+                     speaker_note: str = "Unknown speaker.") -> tuple:
     """Translates text using the Ollama local LLM with glossary-enhanced prompts."""
     start_t = time.time()
 
@@ -62,7 +86,8 @@ def translate_ollama(text: str, source_lang: str, target_lang: str,
     prompt = TRANSLATION_PROMPT_TEMPLATE.format(
         source_lang=source_lang,
         target_lang=target_lang,
-        glossary_section=glossary_section,
+        speaker_note=speaker_note,
+        glossary_section=glossary_section if glossary_section else "No specific terminology loaded.",
         context_str=context_str if context_str else "(No prior context)",
         text=text
     )
@@ -90,19 +115,25 @@ def translate_ollama(text: str, source_lang: str, target_lang: str,
 
 def process_translation_task(task: tuple, context_history: list,
                              ui_queue: multiprocessing.Queue, timing: dict,
-                             glossary_manager=None):
+                             glossary_manager=None, speaker_note: str = "Unknown speaker."):
     """Processes a single translation task using Ollama. Propagates pipeline timing."""
     text, lang = task[:2]
 
     target_lang = "Spanish" if lang == "en" else "English"
     source_lang = "English" if lang == "en" else "Spanish"
 
+    # Guard: if the text is already in the target language, skip translation
+    if _detect_same_language(text, target_lang):
+        logger.info(f"[TRANSLATOR] Skipping re-translation — text already in {target_lang}.")
+        return
+
     timing["translation_start"] = time.time()
 
     # Run Ollama translation with glossary support
     ollama_translation, ollama_time = translate_ollama(
         text, source_lang, target_lang, context_history,
-        glossary_manager=glossary_manager
+        glossary_manager=glossary_manager,
+        speaker_note=speaker_note
     )
 
     timing["translation_end"] = time.time()
@@ -174,8 +205,9 @@ def start_translator(translation_queue: multiprocessing.Queue, ui_queue: multipr
                 executor.submit(
                     process_translation_task,
                     (text, lang), context_history.copy(), ui_queue, timing,
-                    glossary_mgr
+                    glossary_mgr, "Agent or client speaking — use formal register (usted)."
                 )
+
 
             except queue.Empty:
                 continue

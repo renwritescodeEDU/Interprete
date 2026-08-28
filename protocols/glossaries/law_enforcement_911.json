@@ -126,7 +126,19 @@
     "weapon": "arma",
     "weapons": "armas",
     "whisper prompt": "aviso susurrado / mensaje de voz previo",
-    "witness": "testigo"
+    "witness": "testigo",
+    "alley": "callejón / callejuela",
+    "alleyway": "callejón",
+    "dumpster": "contenedor de basura / recipiente de escombros",
+    "trash dumpster": "contenedor de basura",
+    "abandoned vehicle": "vehículo abandonado",
+    "abandoned car": "automóvil abandonado",
+    "noise complaint": "queja por ruido",
+    "sewer": "alcantarilla / desagüe",
+    "drain": "desagüe / drenaje",
+    "report": "reportar / denunciar",
+    "complaint": "queja / denuncia",
+    "local precinct": "comisaría local / delegación de policía"
   },
   "acronyms": {
     "DUI": {

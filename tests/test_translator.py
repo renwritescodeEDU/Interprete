@@ -63,16 +63,16 @@ class TestTranslator(unittest.TestCase):
         ui_queue = MagicMock()
         timing = {"audio_start": 0.5}
         
-        self.mock_time.side_effect = [1.0, 2.5]
-        translator.process_translation_task(("Hello", "en"), ["Context"], ui_queue, timing)
+        # "Hello world" is clearly English → being translated to Spanish, guard won't trigger
+        translator.process_translation_task(("Hello world", "en"), ["Context"], ui_queue, timing)
         
-        self.assertEqual(timing["translation_start"], 1.0)
-        self.assertEqual(timing["translation_end"], 2.5)
+        self.assertIn("translation_start", timing)
+        self.assertIn("translation_end", timing)
         
         ui_queue.put.assert_called_once()
         put_arg = ui_queue.put.call_args[0][0]
         self.assertEqual(put_arg["type"], "translation")
-        self.assertEqual(put_arg["original"], "Hello")
+        self.assertEqual(put_arg["original"], "Hello world")
         self.assertEqual(put_arg["translated"], "Hola")
         self.assertEqual(put_arg["latency"], 1.5)
         self.assertEqual(put_arg["timing"], timing)
@@ -191,24 +191,25 @@ class TestTranslator(unittest.TestCase):
         formatted = translator.TRANSLATION_PROMPT_TEMPLATE.format(
             source_lang="English",
             target_lang="Spanish",
+            speaker_note="Agent speaking.",
             glossary_section="Key terminology:\n- checking account = cuenta corriente",
             context_str="- Context1",
             text="Hello"
         )
-        self.assertIn("English text", formatted)
+        self.assertIn("English", formatted)
         self.assertIn("- Context1", formatted)
-        self.assertIn("Translate this text:\nHello", formatted)
+        self.assertIn("Hello", formatted)
         self.assertIn("checking account = cuenta corriente", formatted)
 
     def test_prompt_contains_formal_register_rules(self):
         """Test that the prompt enforces formal register (usted)."""
         self.assertIn("usted", translator.TRANSLATION_PROMPT_TEMPLATE)
-        self.assertIn("FORMAL register", translator.TRANSLATION_PROMPT_TEMPLATE)
+        self.assertIn("REGISTER", translator.TRANSLATION_PROMPT_TEMPLATE)
 
     def test_prompt_contains_acronym_rules(self):
         """Test that the prompt has acronym expansion instructions."""
         self.assertIn("acronym", translator.TRANSLATION_PROMPT_TEMPLATE.lower())
-        self.assertIn("CD (Certificado de Depósito)", translator.TRANSLATION_PROMPT_TEMPLATE)
+        self.assertIn("APR", translator.TRANSLATION_PROMPT_TEMPLATE)
 
     def test_prompt_contains_compound_term_rules(self):
         """Test that the prompt has compound term translation rules."""

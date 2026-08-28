@@ -37,6 +37,7 @@ class GlossaryManager:
         self._acronyms_master: dict = {}      # master acronyms lookup
         self._common_terms: dict = {}         # common/universal terms
         self._loaded = False
+        self._current_industry: Optional[str] = None  # sticky industry for the session
 
     def load_all(self) -> None:
         """Load all glossary JSON files from the glossaries directory."""
@@ -83,37 +84,41 @@ class GlossaryManager:
     def detect_industry(self, context_texts: list[str]) -> Optional[str]:
         """
         Detect the most likely industry from conversation context.
-
-        Scans all context texts for industry-specific keywords and returns
-        the industry_id with the highest match count.
+        Uses sticky detection: once an industry is identified it remains
+        active for the entire session unless a stronger signal overrides it.
         """
         if not self._glossaries:
-            return None
+            return self._current_industry
 
         combined_text = " ".join(context_texts).lower()
         scores: dict[str, int] = {}
 
         for industry_id, glossary in self._glossaries.items():
             score = 0
-            # Check English keywords
             for kw in glossary.get("detection_keywords_en", []):
                 if kw.lower() in combined_text:
                     score += 1
-            # Check Spanish keywords
             for kw in glossary.get("detection_keywords_es", []):
                 if kw.lower() in combined_text:
                     score += 1
 
-            if score >= MIN_KEYWORD_MATCHES:
+            # Accept even 1 keyword match when no industry is yet known (first phrase)
+            threshold = 1 if self._current_industry is None else MIN_KEYWORD_MATCHES
+            if score >= threshold:
                 scores[industry_id] = score
 
-        if not scores:
-            return None
+        if scores:
+            best = max(scores, key=scores.get)
+            if best != self._current_industry:
+                logger.info(f"Industry detected/updated: {best} (score: {scores[best]})")
+                self._current_industry = best
 
-        # Return the industry with the highest score
-        best = max(scores, key=scores.get)
-        logger.info(f"Industry detected: {best} (score: {scores[best]})")
-        return best
+        return self._current_industry
+
+    def reset_session(self) -> None:
+        """Reset sticky industry at the start of a new call/session."""
+        self._current_industry = None
+        logger.info("[GLOSSARY] Session reset — industry detection cleared.")
 
     def get_relevant_terms(self, text: str, industry_id: Optional[str] = None) -> str:
         """
