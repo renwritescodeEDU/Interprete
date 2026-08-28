@@ -23,3 +23,11 @@ logs/*.txt
 *.bin
 *.pt
 *.onnx
+
+# Packaging
+*.egg-info/
+build/
+dist/
+
+# Proyecto (Kilo)
+.kilo/

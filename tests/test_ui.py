@@ -2,17 +2,14 @@ import os
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
-import multiprocessing
 import tempfile
-import json
-import time
 import queue
 
 # Set offscreen platform before importing Qt
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 
 from PyQt6.QtWidgets import QApplication, QLabel
-from src.ui import _load_config, _save_config, MainWindow, run_ui, CONFIG_FILE
+from src.ui import _load_config, _save_config, MainWindow, run_ui
 
 # Create a global QApplication instance for tests
 _app = QApplication.instance()
@@ -40,7 +37,7 @@ class TestUI(unittest.TestCase):
         run_ui(ui_queue, control_queue, start_callback, stop_callback, "log.txt")
         
         start_callback.assert_called_once()
-        mock_main_window.assert_called_once_with(ui_queue, control_queue, stop_callback, "log.txt")
+        mock_main_window.assert_called_once_with(ui_queue, control_queue, stop_callback, "log.txt", health_check=None)
         mock_app_inst.exec.assert_called_once()
         mock_exit.assert_called_once()
 
@@ -205,6 +202,37 @@ class TestMainWindow(unittest.TestCase):
         self.ui_queue.get_nowait.side_effect = [{"type": "cancel"}, queue.Empty]
         self.window.poll_queue()
         mock_reset.assert_called_once()
+
+    @patch('src.ui.MainWindow._reset_ui_state')
+    def test_poll_queue_skipped(self, mock_reset):
+        """test_poll_queue_skipped - a skipped terminal event resets the UI (no lock)."""
+        self.ui_queue.get_nowait.side_effect = [
+            {"type": "skipped", "reason": "same_language"}, queue.Empty
+        ]
+        self.window.poll_queue()
+        mock_reset.assert_called_once()
+
+    @patch('src.ui.MainWindow._reset_ui_state')
+    def test_poll_queue_skipped_while_recording(self, mock_reset):
+        """test_poll_queue_skipped_while_recording - a late skip must not reset the UI mid-recording."""
+        self.window.is_recording = True
+        self.ui_queue.get_nowait.side_effect = [
+            {"type": "skipped", "reason": "same_language"}, queue.Empty
+        ]
+        self.window.poll_queue()
+        mock_reset.assert_not_called()
+
+    def test_poll_queue_truncated(self):
+        """test_poll_queue_truncated - truncated event warns without resetting state."""
+        with patch.object(self.window, '_reset_ui_state') as mock_reset:
+            self.ui_queue.get_nowait.side_effect = [
+                {"type": "truncated", "dropped_seconds": 12.5, "max_minutes": 5},
+                queue.Empty
+            ]
+            self.window.poll_queue()
+        mock_reset.assert_not_called()
+        self.assertIn("12.5", self.window.current_label.text())
+        self.assertIn("Warning", self.window.current_label.text())
         
     def test_poll_queue_error(self):
         """test_poll_queue_error - verify error queue item displays the error."""
@@ -251,6 +279,43 @@ class TestMainWindow(unittest.TestCase):
         self.assertEqual(len(labels), 2)
         self.assertEqual(labels[0].text(), "Hello")
         self.assertEqual(labels[1].text(), "Hola")
+
+    def test_add_to_history_capped(self):
+        """test_add_to_history_capped - history must not grow without bound."""
+        for i in range(110):
+            self.window._add_to_history(f"orig{i}", f"trans{i}", latency=0.1)
+        self.assertEqual(self.window.history_layout.count(), 100)
+        # Oldest entry was evicted, newest remains
+        newest = self.window.history_layout.itemAt(self.window.history_layout.count() - 1)
+        labels = newest.widget().findChildren(QLabel)
+        self.assertEqual(labels[1].text(), "trans109")
+
+    def test_check_health_all_alive(self):
+        """test_check_health_all_alive - healthy workers leave UI untouched."""
+        self.window.transcriber_ready = True
+        self.window.translator_ready = True
+        self.window.health_check = lambda: {"audio": True, "transcriber": True, "translator": True}
+        self.window.check_health()
+        self.assertFalse(self.window._workers_dead)
+        self.assertNotEqual(self.window.sys_status_label.text(), "System Error")
+
+    def test_check_health_reports_dead_workers(self):
+        """test_check_health_reports_dead_workers - dead workers surface an error."""
+        self.window.transcriber_ready = True
+        self.window.translator_ready = True
+        self.window.health_check = lambda: {"audio": True, "transcriber": False, "translator": True}
+        self.window.check_health()
+        self.assertTrue(self.window._workers_dead)
+        self.assertIn("Worker crash", self.window.current_label.text())
+        self.assertIn("transcriber", self.window.current_label.text())
+        self.assertEqual(self.window.sys_status_label.text(), "System Error")
+        self.assertFalse(self.window.action_btn.isEnabled())
+
+    def test_check_health_not_ready(self):
+        """test_check_health_not_ready - watchdog stays silent before workers are ready."""
+        self.window.health_check = lambda: {"audio": False, "transcriber": False, "translator": False}
+        self.window.check_health()
+        self.assertFalse(self.window._workers_dead)
 
 if __name__ == '__main__':
     unittest.main()

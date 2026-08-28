@@ -2,6 +2,7 @@ import unittest
 import multiprocessing
 from unittest.mock import patch, MagicMock
 
+import src.main as main_module
 from src.main import Orchestrator, main
 
 class TestMain(unittest.TestCase):
@@ -19,7 +20,7 @@ class TestMain(unittest.TestCase):
         mock_set_start.assert_called_once_with('spawn', force=True)
         mock_run_ui.assert_called_once()
         args, _ = mock_run_ui.call_args
-        self.assertEqual(len(args), 5)
+        self.assertEqual(len(args), 6)
 
     @patch('src.main.multiprocessing.Process')
     @patch('src.main.os.makedirs')
@@ -103,6 +104,26 @@ class TestMain(unittest.TestCase):
 
     @patch('src.main.os.makedirs')
     def test_orchestrator_creates_log_dir(self, mock_makedirs):
-        """Verify os.makedirs called for logs dir"""
+        """Verify os.makedirs called for absolute logs dir"""
+        Orchestrator()
+        mock_makedirs.assert_called_once_with(main_module.LOGS_DIR, exist_ok=True)
+
+    @patch('src.main.os.makedirs')
+    def test_health_check_reports_liveness(self, mock_makedirs):
+        """Verify health_check reports per-worker liveness."""
         orch = Orchestrator()
-        mock_makedirs.assert_called_once_with("logs", exist_ok=True)
+        mock_audio = MagicMock()
+        mock_audio.is_alive.return_value = True
+        mock_asr = MagicMock()
+        mock_asr.is_alive.return_value = False
+        mock_translator = MagicMock()
+        mock_translator.is_alive.return_value = True
+        orch.audio_process = mock_audio
+        orch.asr_process = mock_asr
+        orch.translator_process = mock_translator
+
+        status = orch.health_check()
+
+        self.assertTrue(status["audio"])
+        self.assertFalse(status["transcriber"])
+        self.assertTrue(status["translator"])

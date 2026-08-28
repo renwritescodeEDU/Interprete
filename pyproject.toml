@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "interprete"
+version = "1.0.0"
+description = "Simultaneous interpreter with live ASR (faster-whisper) and local LLM translation (Ollama)"
+requires-python = ">=3.10"
+dependencies = [
+    "pyaudio==0.2.14",
+    "PyQt6==6.10.2",
+    "faster-whisper==1.2.1",
+    "numpy>=1.24.0,<2.0.0",
+    "ollama==0.6.2",
+    "scipy==1.13.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.4.2",
+    "pyflakes>=3.2.0",
+]
+
+[project.scripts]
+interprete = "src.main:main"
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-v --tb=short -W error::UserWarning"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: integration tests interacting with models",
+]

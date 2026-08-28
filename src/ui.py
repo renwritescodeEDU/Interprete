@@ -29,6 +29,12 @@ COLOR_WARNING = "#F59E0B"
 COLOR_ERROR = "#EF4444"
 COLOR_BORDER = "#334155"
 
+# Fallback for truncated-event messages that omit max_minutes.
+MAX_RECORDING_MINUTES_DEFAULT = 5
+# Maximum number of translation bubbles kept in the history panel.
+# Prevents unbounded memory growth over long interpreting sessions.
+MAX_HISTORY = 100
+
 logger = logging.getLogger(__name__)
 
 def _load_config():
@@ -51,18 +57,20 @@ def _save_config(config):
         logger.warning(f"Failed to save config: {e}")
 
 class MainWindow(QMainWindow):
-    def __init__(self, ui_queue: multiprocessing.Queue, control_queue: multiprocessing.Queue, stop_callback, log_path: str):
+    def __init__(self, ui_queue: multiprocessing.Queue, control_queue: multiprocessing.Queue, stop_callback, log_path: str, health_check=None):
         super().__init__()
         self.ui_queue = ui_queue
         self.control_queue = control_queue
         self.stop_callback = stop_callback
         self.log_path = log_path
+        self.health_check = health_check
         
         self.transcriber_ready = False
         self.translator_ready = False
         self.is_recording = False
         self._drag_pos = QPoint()
         self._audio_devices = []
+        self._workers_dead = False
 
         self._setup_ui()
         self._center_on_screen()
@@ -73,6 +81,11 @@ class MainWindow(QMainWindow):
         self.poll_timer = QTimer(self)
         self.poll_timer.timeout.connect(self.poll_queue)
         self.poll_timer.start(100)
+
+        # Watchdog: periodically verify worker process liveness.
+        self.health_timer = QTimer(self)
+        self.health_timer.timeout.connect(self.check_health)
+        self.health_timer.start(3000)
 
     def _setup_ui(self):
         self.setWindowTitle("Simultaneous Interpreter")
@@ -285,6 +298,26 @@ class MainWindow(QMainWindow):
                 self.action_btn.setText("Start Recording")
                 self.action_btn.setEnabled(True)
 
+    def check_health(self):
+        """Watchdog: flag a worker that died without sending an error event."""
+        if not self.health_check:
+            return
+        if not (self.transcriber_ready or self.translator_ready):
+            return  # workers not fully started yet
+        status = self.health_check()
+        dead = [name for name, alive in status.items() if not alive]
+        if dead and not self._workers_dead:
+            self._workers_dead = True
+            logger.error(f"[UI] Worker crash detected: {', '.join(dead)}")
+            self.current_label.show()
+            self.current_label.setText(f"<b>Worker crash:</b> {', '.join(dead)}. Restart the app.")
+            self.current_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 16px; padding: 16px; background-color: #450A0A; border: 1px solid #7F1D1D; border-radius: 8px;")
+            self.sys_status_label.setText("System Error")
+            self.sys_status_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 14px; font-weight: 500;")
+            self.action_btn.setEnabled(False)
+        elif not dead:
+            self._workers_dead = False
+
     def on_action_clicked(self):
         if not self.is_recording:
             self.is_recording = True
@@ -336,6 +369,12 @@ class MainWindow(QMainWindow):
         self.refresh_btn.setEnabled(True)
 
     def _add_to_history(self, original: str, translated: str, latency: float = 0.0):
+        # Cap history to bound memory growth on long sessions
+        while self.history_layout.count() >= MAX_HISTORY:
+            oldest = self.history_layout.takeAt(0)
+            if oldest and oldest.widget():
+                oldest.widget().deleteLater()
+
         bubble = QFrame()
         bubble.setObjectName("Bubble")
         bubble_layout = QVBoxLayout()
@@ -401,12 +440,14 @@ class MainWindow(QMainWindow):
                             self.current_label.show()
                             self.current_label.setText(text)
                             self.current_label.setStyleSheet("color: #CBD5E1; font-size: 18px; padding: 16px; background-color: #1E293B; border: 1px solid #334155; border-radius: 8px;")
+                            logger.debug(f"[UI] Partial transcript: '{text}'")
                     elif msg_type == "final":
                         text = item.get("text", "")
                         if text:
                             self.current_label.show()
                             self.current_label.setText(f"<i>{text}</i>")
                             self.current_label.setStyleSheet("color: #94A3B8; font-style: italic; font-size: 18px; padding: 16px; background-color: #1E293B; border: 1px solid #334155; border-radius: 8px;")
+                            logger.info(f"[UI] Final transcript ({len(text)} chars): '{text}'")
                     elif msg_type == "translation":
                         ui_display_time = time.time()
                         original = item.get("original", "")
@@ -430,14 +471,38 @@ class MainWindow(QMainWindow):
 
                         self._add_to_history(original, translated, latency)
                         self._log_message(original, translated, timing)
+                        logger.info(f"[UI] Translation displayed ({len(translated)} chars): '{translated}'")
                         self._reset_ui_state()
                     elif msg_type == "cancel":
                         self._reset_ui_state()
+                    elif msg_type == "skipped":
+                        reason = item.get("reason", "unknown")
+                        logger.info(f"[UI] Translation skipped (reason={reason}).")
+                        # Never reset the UI mid-recording: a late skip from a
+                        # previous utterance must not flip the button while the
+                        # user is already capturing the next one.
+                        if not self.is_recording:
+                            self._reset_ui_state()
+                    elif msg_type == "truncated":
+                        dropped = item.get("dropped_seconds", 0)
+                        max_min = item.get("max_minutes", MAX_RECORDING_MINUTES_DEFAULT)
+                        logger.warning(f"[UI] Audio truncated at {max_min} min — dropped {dropped}s.")
+                        self.current_label.show()
+                        detail = (
+                            f" oldest {dropped:.1f}s dropped."
+                            if dropped > 0
+                            else " audio beyond this point is being discarded."
+                        )
+                        self.current_label.setText(
+                            f"<b>Warning:</b> recording truncated at {max_min} min —{detail}"
+                        )
+                        self.current_label.setStyleSheet(f"color: {COLOR_WARNING}; font-size: 15px; padding: 16px; background-color: #451A03; border: 1px solid #92400E; border-radius: 8px;")
                     elif msg_type == "error":
                         err_msg = item.get("message", "Unknown error")
+                        logger.error(f"[UI] Pipeline error received: {err_msg}")
                         self.current_label.show()
                         self.current_label.setText(f"<b>{err_msg}</b>")
-                        self.current_label.setStyleSheet(f"color: #F87171; font-size: 16px; padding: 16px; background-color: #450A0A; border: 1px solid #7F1D1D; border-radius: 8px;")
+                        self.current_label.setStyleSheet("color: #F87171; font-size: 16px; padding: 16px; background-color: #450A0A; border: 1px solid #7F1D1D; border-radius: 8px;")
                         self.sys_status_label.setText("System Error")
                         self.sys_status_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 14px; font-weight: 500;")
                         self._reset_ui_state(is_error=True)
@@ -453,9 +518,9 @@ class MainWindow(QMainWindow):
         self.stop_callback()
         event.accept()
 
-def run_ui(ui_queue: multiprocessing.Queue, control_queue: multiprocessing.Queue, start_callback, stop_callback, log_path: str = None):
+def run_ui(ui_queue: multiprocessing.Queue, control_queue: multiprocessing.Queue, start_callback, stop_callback, log_path: str = None, health_check=None):
     app = QApplication(sys.argv)
     start_callback()
-    window = MainWindow(ui_queue, control_queue, stop_callback, log_path)
+    window = MainWindow(ui_queue, control_queue, stop_callback, log_path, health_check=health_check)
     window.show()
     sys.exit(app.exec())

@@ -76,6 +76,7 @@ class TestTranscriber(unittest.TestCase):
         mock_segment.text = "Bonjour"
         mock_info = MagicMock()
         mock_info.language = "fr"
+        mock_info.language_probability = 0.90
         mock_model.transcribe.return_value = ([mock_segment], mock_info)
         
         self.asr_queue.put((b"audio_data", 16000, True))
@@ -99,6 +100,7 @@ class TestTranscriber(unittest.TestCase):
         mock_segment.text = "Hello "
         mock_info = MagicMock()
         mock_info.language = "en"
+        mock_info.language_probability = 0.85
         mock_model.transcribe.return_value = ([mock_segment], mock_info)
         
         self.asr_queue.put((b"audio_data", 16000, False))
@@ -198,6 +200,42 @@ class TestTranscriber(unittest.TestCase):
         error_msg = self.ui_queue.get_nowait()
         self.assertEqual(error_msg["type"], "error")
         self.assertIn("Whisper failed", error_msg["message"])
+
+    @patch("src.transcriber.WhisperModel")
+    def test_transcriber_queue_full_emits_skipped(self, mock_whisper):
+        """When translation_queue is full, a skipped terminal event must reach the UI."""
+        from src import transcriber
+        mock_model = MagicMock()
+        mock_whisper.return_value = mock_model
+        
+        mock_segment = MagicMock()
+        mock_segment.text = "Hello world"
+        mock_info = MagicMock()
+        mock_info.language = "en"
+        mock_info.language_probability = 0.95
+        mock_model.transcribe.return_value = ([mock_segment], mock_info)
+        
+        real_send = transcriber._send_to_queue
+
+        def fake_send(q, msg, block=False, timeout=None, error_msg="Queue put failed"):
+            if q is self.translation_queue and isinstance(msg, tuple):
+                return False
+            return real_send(q, msg, block=block, timeout=timeout, error_msg=error_msg)
+        
+        self.asr_queue.put((b"audio", 16000, True, {}))
+        self.asr_queue.put("QUIT")
+        
+        with patch.object(transcriber, "_send_to_queue", side_effect=fake_send):
+            start_transcriber(self.asr_queue, self.translation_queue, self.ui_queue)
+        
+        messages = []
+        while not self.ui_queue.empty():
+            messages.append(self.ui_queue.get_nowait())
+        
+        skipped = [m for m in messages if m.get("type") == "skipped"]
+        self.assertTrue(skipped, f"expected a skipped terminal event in {messages}")
+        self.assertEqual(skipped[0]["reason"], "queue_full")
+        self.assertEqual(skipped[0]["stage"], "translation")
 
 if __name__ == "__main__":
     unittest.main()

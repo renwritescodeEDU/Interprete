@@ -9,7 +9,12 @@ logger = logging.getLogger(__name__)
 # Constants
 MODEL_SIZE = "small"
 COMPUTE_TYPE = "int8"
+# Beam size for the FINAL transcription of a recorded utterance.
 BEAM_SIZE = 5
+# Beam size for live PARTIAL transcripts. Beam search is the dominant CPU
+# cost; a beam of 1 (greedy) on partials keeps stop→display latency within
+# budget during capture, while finals still get the quality of beam 5.
+BEAM_SIZE_PARTIAL = 1
 SUPPORTED_LANGUAGES = {"en", "es"}
 TIMEOUT_PUT = 5.0
 TIMEOUT_GET = 1.0
@@ -23,11 +28,13 @@ PROMPT_EN = "Hello. This is a perfect English transcription, with excellent spel
 def _send_to_queue(q, msg, block=False, timeout=None, error_msg="Queue put failed"):
     try:
         q.put(msg, block=block, timeout=timeout)
+        return True
     except queue.Full:
         if block:
             logger.error(error_msg)
     except Exception as e:
         logger.debug(f"Queue communication error: {e}")
+    return False
 
 def start_transcriber(
     asr_queue: multiprocessing.Queue, translation_queue: multiprocessing.Queue, ui_queue: multiprocessing.Queue
@@ -57,12 +64,17 @@ def start_transcriber(
             else:
                 audio_data, rate, is_final = item
                 timing = {}
+            logger.info(
+                f"[TRANSCRIBER] Chunk received: {len(audio_data)} samples, "
+                f"rate={rate}, is_final={is_final}"
+            )
             
             # Guard clause: Empty audio
             if audio_data is None or len(audio_data) == 0:
                 if is_final:
                     detected_language = None
                     _send_to_queue(ui_queue, {"type": "cancel"})
+                    logger.warning("[TRANSCRIBER] Final chunk was empty — sent cancel")
                 continue
 
             transcription_start = time.time()
@@ -76,19 +88,26 @@ def start_transcriber(
                 
             segments, info = model.transcribe(
                 audio_data, 
-                beam_size=BEAM_SIZE, 
+                beam_size=BEAM_SIZE if is_final else BEAM_SIZE_PARTIAL,
                 vad_filter=True,
                 initial_prompt=prompt
             )
             
             detected_language = info.language
             language_probability = info.language_probability
+            logger.info(
+                f"[TRANSCRIBER] Language detected: '{detected_language}' "
+                f"(p={language_probability:.2f})"
+            )
             
             # Guard clause: Unsupported language
             if detected_language not in SUPPORTED_LANGUAGES:
                 if is_final:
                     detected_language = None
                     _send_to_queue(ui_queue, {"type": "cancel"})
+                    logger.warning(
+                        f"[TRANSCRIBER] Unsupported language '{detected_language}' — sent cancel"
+                    )
                 continue
 
             # Guard clause: Low confidence — drop to avoid inverted translations
@@ -111,6 +130,7 @@ def start_transcriber(
                 if is_final:
                     detected_language = None
                     _send_to_queue(ui_queue, {"type": "cancel"})
+                    logger.warning("[TRANSCRIBER] Transcription produced no text — sent cancel")
                 continue
 
             # Valid text branch
@@ -118,17 +138,30 @@ def start_transcriber(
                 _send_to_queue(ui_queue, {"type": "partial", "text": text})
             else:
                 detected_language = None
-                logger.info(f"[TRANSCRIBER] Transcription completed in {transcription_elapsed:.3f}s: '{text[:80]}{'...' if len(text) > 80 else ''}'")
+                logger.info(
+                    f"[TRANSCRIBER] Transcription completed in {transcription_elapsed:.3f}s "
+                    f"({len(text)} chars): '{text}'"
+                )
 
                 # Propagate timing dict with transcription timestamps
                 timing["transcription_start"] = transcription_start
                 timing["transcription_end"] = transcription_end
 
-                _send_to_queue(ui_queue, {"type": "final", "text": text}, block=True, timeout=TIMEOUT_PUT, error_msg="ui_queue full, dropped final transcription")
-                _send_to_queue(translation_queue, (text, info.language, timing), block=True, timeout=TIMEOUT_PUT, error_msg="translation_queue full, dropped text")
+                # Terminal event contract: every final path emits at least one
+                # terminal UI event. If a final cannot be delivered, emit a
+                # 'skipped' event so the UI never locks in a pending state.
+                final_sent = _send_to_queue(ui_queue, {"type": "final", "text": text}, block=True, timeout=TIMEOUT_PUT, error_msg="ui_queue full, dropped final transcription")
+                if not final_sent:
+                    _send_to_queue(ui_queue, {"type": "skipped", "reason": "queue_full", "stage": "ui"}, block=False)
+
+                translation_sent = _send_to_queue(translation_queue, (text, info.language, timing), block=True, timeout=TIMEOUT_PUT, error_msg="translation_queue full, dropped text")
+                if not translation_sent:
+                    _send_to_queue(ui_queue, {"type": "skipped", "reason": "queue_full", "stage": "translation"}, block=True, timeout=TIMEOUT_PUT)
+                else:
+                    logger.info(f"[TRANSCRIBER] Final queued for translation (lang={info.language}, {len(text)} chars)")
 
         except queue.Empty:
             continue
         except Exception as e:
-            logger.error(f"Transcriber error: {e}")
+            logger.error(f"Transcriber error: {e}. Item: {item!r}")
             _send_to_queue(ui_queue, {"type": "error", "message": f"Transcription Error: {e}"}, block=True, timeout=TIMEOUT_PUT)

@@ -1,6 +1,4 @@
-import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import multiprocessing
 import logging
@@ -14,6 +12,8 @@ from src.ui import run_ui
 MAX_QUEUE_SIZE = 5
 PROCESS_JOIN_TIMEOUT = 3.0
 PROCESS_TERM_TIMEOUT = 1.0
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOGS_DIR = os.path.join(PROJECT_ROOT, "logs")
 
 # Configure logging with millisecond precision
 logging.basicConfig(
@@ -35,8 +35,16 @@ class Orchestrator:
         self.ui_queue = multiprocessing.Queue()
         self.control_queue = multiprocessing.Queue()
         
-        os.makedirs("logs", exist_ok=True)
-        self.log_path = os.path.join("logs", f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        self.log_path = os.path.join(LOGS_DIR, f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+
+    def health_check(self) -> dict:
+        """Liveness of each worker process. Called periodically by the UI watchdog."""
+        return {
+            "audio": bool(self.audio_process and self.audio_process.is_alive()),
+            "transcriber": bool(self.asr_process and self.asr_process.is_alive()),
+            "translator": bool(self.translator_process and self.translator_process.is_alive()),
+        }
 
     def _clear_queue(self, q: multiprocessing.Queue):
         while not q.empty():
@@ -104,7 +112,8 @@ def main():
         orchestrator.control_queue, 
         orchestrator.start_processes, 
         orchestrator.stop_processes, 
-        orchestrator.log_path
+        orchestrator.log_path,
+        orchestrator.health_check
     )
 
 if __name__ == "__main__":

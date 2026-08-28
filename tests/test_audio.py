@@ -3,7 +3,6 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 import queue
-import multiprocessing
 import numpy as np
 import time
 
@@ -17,8 +16,6 @@ from src.audio import (
     start_audio_capture,
     RATE,
     CHUNK,
-    FORMAT,
-    CHANNELS,
 )
 
 
@@ -121,7 +118,7 @@ class TestAudioModule(unittest.TestCase):
 
     @patch('src.audio.pyaudio.PyAudio')
     def test_audio_capture_reports_error_to_ui_queue(self, mock_pyaudio):
-        """Verify stream open failure is reported to ui_queue."""
+        """Verify stream open failure is reported to ui_queue (no silent death)."""
         mock_p = MagicMock()
         mock_pyaudio.return_value = mock_p
         
@@ -135,8 +132,51 @@ class TestAudioModule(unittest.TestCase):
         
         start_audio_capture(asr_queue, control_queue, ui_queue=ui_queue)
         
-        # Capture just logs and returns on failure, ui_queue should remain empty
-        self.assertTrue(ui_queue.empty())
+        msg = ui_queue.get_nowait()
+        self.assertEqual(msg["type"], "error")
+        self.assertIn("Mocked stream error", msg["message"])
+
+    @patch('src.audio.pyaudio.PyAudio')
+    def test_audio_capture_reports_truncation(self, mock_pyaudio):
+        """Verify a recording exceeding MAX_RECORDING_MINUTES emits a truncated event once."""
+        from src.audio import MAX_RECORDING_MINUTES
+        mock_p = MagicMock()
+        mock_pyaudio.return_value = mock_p
+        mock_stream = MagicMock()
+        mock_stream.read.return_value = b'\x00' * 960  # 480 samples @ int16
+        mock_stream.get_read_available.side_effect = OSError("flush error")
+        mock_p.open.return_value = mock_stream
+        
+        asr_queue = queue.Queue()
+        ui_queue = queue.Queue()
+        
+        max_frames = int(MAX_RECORDING_MINUTES * 60 * 16000 / 480)
+        seq = [("START", 0.0)] + [None] * (max_frames + 2000) + [("FINISH", 1.0), "QUIT"]
+        
+        class SequenceControl:
+            def __init__(self, sequence):
+                self._seq = list(sequence)
+                self._i = 0
+            def get_nowait(self):
+                if self._i >= len(self._seq):
+                    raise queue.Empty
+                item = self._seq[self._i]
+                self._i += 1
+                if item is None:
+                    raise queue.Empty
+                return item
+        
+        start_audio_capture(asr_queue, SequenceControl(seq), ui_queue=ui_queue)
+        
+        truncated_events = []
+        while not ui_queue.empty():
+            msg = ui_queue.get()
+            if msg.get("type") == "truncated":
+                truncated_events.append(msg)
+        
+        self.assertEqual(len(truncated_events), 1, "truncation must be reported exactly once")
+        self.assertEqual(truncated_events[0]["max_minutes"], MAX_RECORDING_MINUTES)
+        self.assertGreaterEqual(truncated_events[0]["dropped_seconds"], 0.0)
 
     def test_process_audio_frames_no_resampling(self):
         """Direct call with actual_rate==RATE"""

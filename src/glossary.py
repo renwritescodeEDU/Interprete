@@ -120,15 +120,17 @@ class GlossaryManager:
         self._current_industry = None
         logger.info("[GLOSSARY] Session reset — industry detection cleared.")
 
-    def get_relevant_terms(self, text: str, industry_id: Optional[str] = None) -> str:
+    def get_relevant_terms(self, text: str, industry_id: Optional[str] = None,
+                           target_lang: str = "Spanish") -> str:
         """
         Extract relevant glossary terms for the given input text.
 
-        Returns a formatted string suitable for prompt injection.
-        Prioritizes:
-        1. Terms from the detected industry that match words in the input text
-        2. Common terms that match words in the input text
-        3. High-frequency terms from the detected industry
+        Returns a formatted string suitable for prompt injection, ordered in
+        the translation direction: "English = Spanish" when translating to
+        Spanish, "Spanish = English" when translating to English. The
+        source->target ordering prevents small models from being primed into
+        echoing the source language (e.g. a list of "English = Spanish" pairs
+        makes an ES->EN model output Spanish).
         """
         text_lower = text.lower()
         matched_terms: dict[str, str] = {}
@@ -166,15 +168,19 @@ class GlossaryManager:
         if not matched_terms:
             return ""
 
-        lines = [f"- {en} = {es}" for en, es in matched_terms.items()]
+        if target_lang == "English":
+            lines = [f"- {es} = {en}" for en, es in matched_terms.items()]
+        else:
+            lines = [f"- {en} = {es}" for en, es in matched_terms.items()]
         return "\n".join(lines)
 
-    def get_relevant_acronyms(self, text: str, industry_id: Optional[str] = None) -> str:
+    def get_relevant_acronyms(self, text: str, industry_id: Optional[str] = None,
+                              target_lang: str = "Spanish") -> str:
         """
         Extract relevant acronyms for the given input text.
 
-        Scans for uppercase letter sequences that match known acronyms.
-        Returns a formatted string suitable for prompt injection.
+        When the target is English the Spanish expansion is omitted so the
+        model is not primed into outputting Spanish.
         """
         # Find potential acronyms in the text (2-6 uppercase letters)
         potential_acronyms = set(re.findall(r'\b[A-Z]{2,6}\b', text))
@@ -214,17 +220,22 @@ class GlossaryManager:
         for acronym, data in matched_acronyms.items():
             full_en = data.get("full_en", "")
             es = data.get("es", "")
-            lines.append(f"- {acronym} ({full_en}) → {es}")
+            if target_lang == "English":
+                lines.append(f"- {acronym} ({full_en})")
+            else:
+                lines.append(f"- {acronym} ({full_en}) → {es}")
 
         return "\n".join(lines)
 
-    def build_glossary_prompt_section(self, text: str, context_history: list[str]) -> str:
+    def build_glossary_prompt_section(self, text: str, context_history: list[str],
+                                      target_lang: str = "Spanish") -> str:
         """
         Build the complete glossary section for the translation prompt.
 
         This is the main entry point called by the translator.
         It detects the industry, finds relevant terms and acronyms,
-        and formats them for injection into the prompt.
+        and formats them for injection into the prompt, ordered in the
+        translation direction (target_lang).
         """
         self.load_all()
 
@@ -233,8 +244,8 @@ class GlossaryManager:
         industry_id = self.detect_industry(all_context)
 
         # Get relevant terms and acronyms
-        terms_section = self.get_relevant_terms(text, industry_id)
-        acronyms_section = self.get_relevant_acronyms(text, industry_id)
+        terms_section = self.get_relevant_terms(text, industry_id, target_lang)
+        acronyms_section = self.get_relevant_acronyms(text, industry_id, target_lang)
 
         parts = []
 
@@ -246,7 +257,10 @@ class GlossaryManager:
             parts.append(f"Key terminology:\n{terms_section}")
 
         if acronyms_section:
-            parts.append(f"Acronyms (use Spanish equivalent with meaning in parentheses):\n{acronyms_section}")
+            if target_lang == "English":
+                parts.append(f"Acronyms (use English meaning):\n{acronyms_section}")
+            else:
+                parts.append(f"Acronyms (use Spanish equivalent with meaning in parentheses):\n{acronyms_section}")
 
         if not parts:
             return "No specific terminology loaded."
