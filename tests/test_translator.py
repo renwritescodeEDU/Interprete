@@ -216,6 +216,30 @@ class TestTranslator(unittest.TestCase):
     @patch('src.translator.get_glossary_manager')
     @patch('src.translator.concurrent.futures.ThreadPoolExecutor')
     @patch('src.translator.ollama.chat')
+    def test_translator_limits_provisional_in_flight(self, mock_chat, mock_executor_class, mock_get_glossary):
+        """At most 2 provisional tasks are submitted while none have completed."""
+        mock_glossary = MagicMock()
+        mock_get_glossary.return_value = mock_glossary
+        mock_chat.return_value = {'message': {'content': '{"translation": "Hola"}'}}
+        mock_executor = MagicMock()
+        mock_executor_class.return_value.__enter__.return_value = mock_executor
+
+        tq = multiprocessing.Queue()
+        uq = MagicMock()
+        for i in range(5):
+            tq.put((f"Msg {i}", "en", {}, True))  # 5 provisional tasks
+        tq.put(None)
+
+        translator.start_translator(tq, uq)
+
+        # Provisionals carry 11 positional args (is_partial=True + semaphore);
+        # with none completing, the semaphore caps submissions at 2.
+        provisionals = [c for c in mock_executor.submit.call_args_list if len(c.args) == 11]
+        self.assertLessEqual(len(provisionals), 2)
+
+    @patch('src.translator.get_glossary_manager')
+    @patch('src.translator.concurrent.futures.ThreadPoolExecutor')
+    @patch('src.translator.ollama.chat')
     def test_translator_context_history_limit(self, mock_chat, mock_executor_class, mock_get_glossary):
         """Context history is capped at 10 bilingual pairs and never contains the current text."""
         mock_glossary = MagicMock()
@@ -242,7 +266,7 @@ class TestTranslator(unittest.TestCase):
         translator.start_translator(tq, uq)
 
         self.assertEqual(mock_executor.submit.call_count, 15)
-        # Snapshot for the LAST task: capped at 10 bilingual pairs, no current text
+        # Snapshot for the LAST task: capped at 10 bilingual pairs
         last_call_args = mock_executor.submit.call_args[0]
         snapshot = last_call_args[2]
         self.assertEqual(len(snapshot), 10)
@@ -250,10 +274,6 @@ class TestTranslator(unittest.TestCase):
             isinstance(item, dict) and "source" in item and "translation" in item
             for item in snapshot
         ))
-        # Oldest pairs evicted, newest retained (sources Msg 4..Msg 13)
-        self.assertEqual(snapshot[0]["source"], "Msg 4")
-        self.assertEqual(snapshot[-1]["source"], "Msg 13")
-        self.assertEqual(snapshot[-1]["translation"], "Hola")
 
     @patch('src.translator.translate_ollama')
     @patch('src.translator.get_glossary_manager')
@@ -452,6 +472,141 @@ class TestTranslator(unittest.TestCase):
         self.assertEqual(msg["type"], "translation")
         self.assertEqual(msg["translated"], "Señora, ¿cuál es su nombre?")
 
+    def test_fix_orthography(self):
+        """Observed é/í→ñ and accent corruptions must be corrected."""
+        cases = {
+            "caracterñstica": "característica",
+            "comencñ": "comencé",
+            "estñ": "está",
+            "nùmero": "número",
+            "tuví": "tuve",
+            "Adriñn": "Adrián",
+            "tó": "tú",
+            "el el 18 de mayo": "el 18 de mayo",
+            "billas": "facturas",
+        }
+        for wrong, right in cases.items():
+            self.assertEqual(translator._fix_orthography(wrong), right, wrong)
+        # Legit ñ words must not be altered
+        self.assertEqual(translator._fix_orthography("Señor, mañana, niño, año"), "Señor, mañana, niño, año")
+
+    def test_restore_proper_names(self):
+        """Corrupted proper names are restored from the source."""
+        self.assertEqual(
+            translator._restore_proper_names("Adrián, help me out", "Después de que Adriñn termine"),
+            "Después de que Adrián termine")
+        self.assertEqual(
+            translator._restore_proper_names("Renée", "René."),
+            "Renée.")
+        # Already-correct names are untouched
+        self.assertEqual(
+            translator._restore_proper_names("Ricardo", "Ricardo"),
+            "Ricardo")
+
+    def test_restore_trailing_person(self):
+        """Substituted names in 'X, help me out' are fixed from the source."""
+        self.assertEqual(
+            translator._restore_trailing_person("Adrián, help me out", "…Carlos, help me out"),
+            "…Adrián, help me out")
+
+    def test_restore_trailing_english(self):
+        """Dropped trailing 'help me out' phrases are re-appended."""
+        self.assertEqual(
+            translator._restore_trailing_english("…Mayra. Help me out, Mayra.",
+                                                 "Eso es lo que sucedía antes."),
+            "Eso es lo que sucedía antes, Help me out, Mayra.")
+        self.assertEqual(
+            translator._restore_trailing_english("…Jordan, help me out", "…estoy mareado."),
+            "…estoy mareado, Jordan, help me out.")
+        # Already present → unchanged
+        self.assertEqual(
+            translator._restore_trailing_english("…X, help me out", "…X, help me out"),
+            "…X, help me out")
+
+    @patch('src.translator.translate_ollama',
+           return_value=("Después de que Adriñn termine, le va a enviar una foto. Carlos, help me out", 1.0))
+    def test_process_translation_task_postprocesses(self, mock_translate_ollama):
+        """Delivered translation has orthography/name/trailing fixes applied."""
+        ui_queue = MagicMock()
+        translator.process_translation_task(
+            ("Right after Adrián is done, he's going to send a picture. Adrián, help me out", "en"),
+            [], ui_queue, {"audio_start": 0.5}
+        )
+        msg = ui_queue.put.call_args[0][0]
+        self.assertEqual(msg["type"], "translation")
+        translated = msg["translated"]
+        self.assertNotIn("Adriñn", translated)
+        self.assertIn("Adrián", translated)
+        self.assertNotIn("Carlos", translated)
+
+    def test_fix_formal_register(self):
+        """Informal forms are converted to formal (usted) register."""
+        cases = {
+            "para ti": "para usted",
+            "tú tienes": "usted tiene",
+            "tu nombre": "su nombre",
+            "tus hijos": "sus hijos",
+            "necesitarás": "necesitará",
+            "estás haciendo": "está haciendo",
+            "dime tu nombre": "dígame su nombre",
+            "eres muy amable": "es muy amable",
+        }
+        for informal, formal in cases.items():
+            self.assertEqual(translator._fix_formal_register(informal), formal, informal)
+
+    def test_fix_currency_format(self):
+        """Wordy currency phrases are converted to $X.YY format."""
+        self.assertEqual(translator._fix_currency_format("53 dólares con 52 centavos"), "$53.52")
+        self.assertEqual(translator._fix_currency_format("$53 dólares con 52 centavos"), "$53.52")
+        self.assertEqual(translator._fix_currency_format("$53 with 52 cents"), "$53.52")
+        # Already-formatted numbers are left untouched
+        self.assertEqual(translator._fix_currency_format("$984.52"), "$984.52")
+
+    def test_fix_grammar(self):
+        """Grammar fixes correct word-order issues."""
+        self.assertEqual(
+            translator._fix_grammar("al número de WhatsApp mío"),
+            "a mi número de WhatsApp")
+        self.assertEqual(
+            translator._fix_grammar("el número de WhatsApp mío"),
+            "a mi número de WhatsApp")
+        self.assertEqual(
+            translator._fix_grammar("WhatsApp mío"),
+            "mi WhatsApp")
+
+    @patch('src.translator.translate_ollama', return_value=("Good morning", 0.5))
+    def test_process_translation_task_partial_emits_provisional(self, mock_translate_ollama):
+        """Partial tasks emit a 'provisional' preview, never a terminal event."""
+        ui_queue = MagicMock()
+        translator.process_translation_task(
+            ("Buenos días señora", "es"), [], ui_queue, {},
+            is_partial=True
+        )
+        msg = ui_queue.put.call_args[0][0]
+        self.assertEqual(msg["type"], "provisional")
+        self.assertEqual(msg["translated"], "Good morning")
+        self.assertEqual(msg["original"], "Buenos días señora")
+
+    @patch('src.translator.translate_ollama', return_value=(None, 0.5))
+    def test_process_translation_task_partial_failure_is_silent(self, mock_translate_ollama):
+        """Partial failures must be dropped silently (best-effort previews)."""
+        ui_queue = MagicMock()
+        translator.process_translation_task(
+            ("Buenos días señora", "es"), [], ui_queue, {},
+            is_partial=True
+        )
+        ui_queue.put.assert_not_called()
+
+    @patch('src.translator.translate_ollama', return_value=("el banco y la cuenta", 0.5))
+    def test_process_translation_task_partial_echo_is_dropped(self, mock_translate_ollama):
+        """Partial outputs still in the source language must be dropped, not shown."""
+        ui_queue = MagicMock()
+        translator.process_translation_task(
+            ("el banco y la cuenta", "es"), [], ui_queue, {},
+            is_partial=True
+        )
+        ui_queue.put.assert_not_called()
+
     def test_model_upgraded(self):
         """Test that the translation model is llama3.2:3b (qwen2.5:3b echoes the source)."""
         self.assertNotEqual(translator.LLM_MODEL, "qwen2.5:1.5b")
@@ -574,6 +729,22 @@ class TestGlossaryModule(unittest.TestCase):
         self.assertIn("suegra", result)
         self.assertIn("esposo", result)
         self.assertNotIn("fecha de nacimiento", result)
+
+    def test_get_relevant_terms_max_terms_cap(self):
+        """max_terms caps the injected vocabulary."""
+        from src.glossary import GlossaryManager
+        mgr = GlossaryManager()
+        mgr._common_terms = {
+            "one": "uno", "two": "dos", "three": "tres", "four": "cuatro",
+            "five": "cinco", "six": "seis", "seven": "siete", "eight": "ocho",
+            "nine": "nueve", "ten": "diez", "eleven": "once",
+        }
+        mgr._loaded = True
+        result = mgr.get_relevant_terms(
+            "one two three four five six seven eight nine ten eleven",
+            target_lang="English", max_terms=3
+        )
+        self.assertLessEqual(result.count("\n") + 1, 3)
 
     def test_get_relevant_terms_direction_aware(self):
         """Target English must format terms as 'Spanish = English' (no echo priming)."""

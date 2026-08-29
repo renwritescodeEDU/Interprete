@@ -121,7 +121,8 @@ class GlossaryManager:
         logger.info("[GLOSSARY] Session reset — industry detection cleared.")
 
     def get_relevant_terms(self, text: str, industry_id: Optional[str] = None,
-                           target_lang: str = "Spanish") -> str:
+                           target_lang: str = "Spanish",
+                           max_terms: int = MAX_TERMS_IN_PROMPT) -> str:
         """
         Extract relevant glossary terms for the given input text.
 
@@ -131,6 +132,9 @@ class GlossaryManager:
         source->target ordering prevents small models from being primed into
         echoing the source language (e.g. a list of "English = Spanish" pairs
         makes an ES->EN model output Spanish).
+
+        max_terms caps the injected vocabulary; short utterances should pass a
+        smaller budget to keep the LLM prompt (and its processing time) small.
         """
         text_lower = text.lower()
         matched_terms: dict[str, str] = {}
@@ -150,18 +154,18 @@ class GlossaryManager:
             # 3. If few matches, add some high-frequency terms from the industry
             if len(matched_terms) < 10:
                 # Add first N terms from the industry as context hints
-                remaining = MAX_TERMS_IN_PROMPT - len(matched_terms)
+                remaining = max_terms - len(matched_terms)
                 for en_term, es_term in list(industry_terms.items())[:remaining]:
                     if en_term not in matched_terms:
                         matched_terms[en_term] = es_term
 
         # Limit total terms
-        if len(matched_terms) > MAX_TERMS_IN_PROMPT:
+        if len(matched_terms) > max_terms:
             # Prioritize exact matches in the text
             exact_matches = {k: v for k, v in matched_terms.items() if k.lower() in text_lower}
             other_matches = {k: v for k, v in matched_terms.items() if k.lower() not in text_lower}
-            matched_terms = dict(list(exact_matches.items())[:MAX_TERMS_IN_PROMPT])
-            remaining = MAX_TERMS_IN_PROMPT - len(matched_terms)
+            matched_terms = dict(list(exact_matches.items())[:max_terms])
+            remaining = max_terms - len(matched_terms)
             if remaining > 0:
                 matched_terms.update(dict(list(other_matches.items())[:remaining]))
 
@@ -228,7 +232,8 @@ class GlossaryManager:
         return "\n".join(lines)
 
     def build_glossary_prompt_section(self, text: str, context_history: list[str],
-                                      target_lang: str = "Spanish") -> str:
+                                      target_lang: str = "Spanish",
+                                      max_terms: int = MAX_TERMS_IN_PROMPT) -> str:
         """
         Build the complete glossary section for the translation prompt.
 
@@ -244,7 +249,7 @@ class GlossaryManager:
         industry_id = self.detect_industry(all_context)
 
         # Get relevant terms and acronyms
-        terms_section = self.get_relevant_terms(text, industry_id, target_lang)
+        terms_section = self.get_relevant_terms(text, industry_id, target_lang, max_terms)
         acronyms_section = self.get_relevant_acronyms(text, industry_id, target_lang)
 
         parts = []

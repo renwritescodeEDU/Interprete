@@ -26,6 +26,10 @@ OLLAMA_TIMEOUT = 120.0
 # Cap on generated tokens to prevent runaway/unbounded LLM output while
 # remaining large enough for long (multi-minute) statements.
 MAX_TRANSLATION_TOKENS = 2048
+# Utterances shorter than this get a reduced glossary budget: the injected
+# vocabulary dominates prompt-processing time for small 3B models.
+SHORT_TEXT_CHARS = 100
+SHORT_TEXT_MAX_TERMS = 10
 # Timeout for delivering events to the UI queue.
 UI_PUT_TIMEOUT = 5.0
 # Generous sanity bounds on translation length vs source. English↔Spanish
@@ -82,17 +86,17 @@ def _build_rules(target_lang: str) -> dict:
     """
     if target_lang == "Spanish":
         return {
-            "register_rule": 'REGISTER: Always use formal address. In Spanish: "usted/su/le/él/ella" NEVER "tú/tu/te".',
-            "completeness_rule": "COMPLETENESS: Translate EVERY word, including honorifics. Never omit the first or the last word of the utterance. Preserve numbers, dates, codes, and phone numbers unchanged.",
-            "accuracy_rule": "ACCURACY: Translate compound terms correctly. Examples: mother-in-law=suegra, checking account=cuenta corriente, child support=manutención de menores, food stamps=cupones de alimento (SNAP), alley=callejón, dumpster=contenedor de basura, non-payment=falta de pago / impago, ma'am=señora.",
+            "register_rule": 'REGISTER: Always use formal address. In Spanish: "usted/su/le/él/ella" NEVER "tú/tu/te". Example: "for you" → "para usted", never "para ti"; "you will need" → "necesitará", never "necesitarás". Use "su" (formal possessive), never "tu" or "tus".',
+            "completeness_rule": "COMPLETENESS: Translate EVERY word, including honorifics. Never omit the first or the last word of the utterance. If the source ends with English words such as 'X, help me out', keep that phrase unchanged at the end of the translation. Preserve numbers, dates, codes, and phone numbers unchanged.",
+            "accuracy_rule": 'ACCURACY: Translate compound terms correctly. Examples: mother-in-law=suegra, checking account=cuenta corriente, child support=manutención de menores, food stamps=cupones de alimento (SNAP), alley=callejón, dumpster=contenedor de basura, non-payment=falta de pago / impago, ma\'am=señora, bills=facturas (nunca "billas"), on point=preciso/exacto (nunca "en punto" para este sentido). Format monetary amounts as $X,XXX.XX (e.g. "$53.52", never "$53 with 52 cents").',
             "acronym_rule": "ACRONYMS: First use → expand with Spanish meaning in parentheses. Example: APR → TAP (Tasa Anual de Porcentaje).",
-            "orthography_rule": "ORTHOGRAPHY: Use correct Spanish spelling, tildes, and punctuation. Questions must open with ¿ and close with ?. Do not invent accents.",
-            "pronoun_resolution_rule": "PRONOUNS: Keep the speaker's perspective. English 'your' → 'su' (formal) only when addressing the listener directly; 'his' → 'su' when referring to a third person. Do not add or drop pronouns.",
+            "orthography_rule": 'ORTHOGRAPHY: Use correct Spanish spelling, tildes, and punctuation. Questions must open with ¿ and close with ?. Never replace "é" or "í" with "ñ" — the letter ñ appears only in words like señor, mañana, niño, año. Never add spurious accents to vowels (write "número", not "nùmero"; write "tuve", not "tuví").',
+            "pronoun_resolution_rule": "PRONOUNS: Keep the speaker's perspective. English 'your' → 'su' (formal) only when addressing the listener directly; 'his' → 'su' when referring to a third person. English 'send me' → 'me envíe' (first person), never 'le envíe'. Do not add or drop pronouns.",
         }
     # target_lang == "English"
     return {
         "register_rule": 'REGISTER: Use formal address consistently. Render quoted Spanish forms as "usted/su/le/él/ella"; the translated output must remain in English.',
-        "completeness_rule": "COMPLETENESS: Translate EVERY word, including honorifics (señora = ma'am, señor = sir, don = Mr.). Never omit the first or the last word of the utterance. Preserve numbers, dates, codes, and phone numbers unchanged.",
+        "completeness_rule": "COMPLETENESS: Translate EVERY word, including honorifics (señora = ma'am, señor = sir, don = Mr.). Never omit the first or the last word of the utterance. If the source ends with English words such as 'X, help me out', keep that phrase unchanged at the end of the translation. Preserve numbers, dates, codes, and phone numbers unchanged.",
         "accuracy_rule": "ACCURACY: Translate compound terms correctly. Examples: suegra=mother-in-law, cuenta corriente=checking account, manutención de menores=child support, cupones de alimento=food stamps (SNAP), callejón=alley, contenedor de basura=dumpster, falta de pago / impago=non-payment, señora=ma'am.",
         "acronym_rule": "ACRONYMS: Translate acronyms to their English equivalent. First use → expand with English meaning in parentheses. Example: TAP → APR (Annual Percentage Rate).",
         "orthography_rule": 'ORTHOGRAPHY: Use standard English spelling. Contractions must use correct apostrophe placement (e.g. "ma\'am" not "maam" or "maám"; "don\'t" not "dont").',
@@ -168,13 +172,19 @@ def translate_ollama(text: str, source_lang: str, target_lang: str,
 
     # Build glossary section from the glossary manager.
     # The glossary industry detector works on plain text, so pass only the
-    # source sentences, never the bilingual dicts.
+    # source sentences, never the bilingual dicts. Short utterances get a
+    # reduced vocabulary budget to keep LLM prompt-processing time low.
     glossary_section = ""
     if glossary_manager:
         try:
-            glossary_section = glossary_manager.build_glossary_prompt_section(
-                text, context_source_texts, target_lang
-            )
+            if len(text) < SHORT_TEXT_CHARS:
+                glossary_section = glossary_manager.build_glossary_prompt_section(
+                    text, context_source_texts, target_lang, max_terms=SHORT_TEXT_MAX_TERMS
+                )
+            else:
+                glossary_section = glossary_manager.build_glossary_prompt_section(
+                    text, context_source_texts, target_lang
+                )
         except Exception as e:
             logger.warning(f"Glossary lookup failed: {e}")
             glossary_section = ""
@@ -261,6 +271,182 @@ def _restore_honorific(source: str, translation: str, target_lang: str) -> str:
     return translation
 
 
+# Observed 3B-model Spanish orthography corruptions (é/í → ñ, spurious accents).
+_ORTHOGRAPHY_FIXES = {
+    "caracterñstica": "característica",
+    "caracterñsticas": "características",
+    "caracterñstico": "característico",
+    "comencñ": "comencé",
+    "comenzñ": "comencé",
+    "estñ": "está",
+    "estñn": "están",
+    "nùmero": "número",
+    "nùmeros": "números",
+    "tuví": "tuve",
+    "Adriñn": "Adrián",
+    "polisa": "póliza",
+    "compañia": "compañía",
+    "billas": "facturas",
+    "bién": "bien",
+    "aúnque": "aunque",
+    "despues": "después",
+    "tambien": "también",
+}
+_ORTHOGRAPHY_WORD_FIXES = {"tó": "tú"}
+
+
+def _fix_orthography(text: str) -> str:
+    """Correct known 3B-model Spanish character corruptions deterministically."""
+    for wrong, right in _ORTHOGRAPHY_FIXES.items():
+        text = text.replace(wrong, right)
+    for wrong, right in _ORTHOGRAPHY_WORD_FIXES.items():
+        text = re.sub(rf"\b{re.escape(wrong)}\b", right, text)
+    text = re.sub(r"\bel el\b", "el", text)
+    return text
+
+
+def _edit_distance(a: str, b: str, max_dist: int = 2) -> int:
+    if abs(len(a) - len(b)) > max_dist:
+        return max_dist + 1
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        curr = [i]
+        for j, cb in enumerate(b, 1):
+            curr.append(min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = curr
+    return prev[-1]
+
+
+_NAME_TOKEN_RE = re.compile(r"\b[A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]+")
+
+
+def _restore_proper_names(source: str, translation: str) -> str:
+    """Restore corrupted proper names (e.g. 'Adriñn' → 'Adrián', 'René' → 'Renée')."""
+    source_names = set(_NAME_TOKEN_RE.findall(source))
+    if not source_names:
+        return translation
+    for name in source_names:
+        name_lower = name.lower()
+        if name_lower in translation.lower():
+            continue
+        for token in set(_NAME_TOKEN_RE.findall(translation)):
+            if token == name or token.lower() == name_lower:
+                continue
+            if abs(len(token) - len(name)) <= 1 and _edit_distance(token, name, 1) <= 1:
+                translation = translation.replace(token, name)
+                break
+    return translation
+
+
+_TRAILING_PERSON_RE = re.compile(
+    r"([A-ZÁÉÍÓÚÑÜ][\wáéíóúñü-]*)\s*,\s*(?:help me out)|"
+    r"(?:help me out)\s*,\s*([A-ZÁÉÍÓÚÑÜ][\wáéíóúñü-]*)",
+    re.IGNORECASE,
+)
+
+
+def _restore_trailing_person(source: str, translation: str) -> str:
+    """Fix substituted names in trailing 'X, help me out' patterns."""
+    s = _TRAILING_PERSON_RE.search(source)
+    if not s:
+        return translation
+    src_name = s.group(1) or s.group(2)
+    if not src_name:
+        return translation
+    t = _TRAILING_PERSON_RE.search(translation)
+    if t:
+        tgt_name = t.group(1) or t.group(2)
+        if tgt_name and tgt_name.lower() != src_name.lower():
+            translation = translation.replace(tgt_name, src_name)
+    return translation
+
+
+_TRAILING_ENGLISH_RE = re.compile(
+    r"((?:[A-ZÁÉÍÓÚÑÜ][\wáéíóúñü-]*\s*,\s*)?help me out(?:\s*,\s*[A-ZÁÉÍÓÚÑÜ][\wáéíóúñü-]*)?)[.,]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _restore_trailing_english(source: str, translation: str) -> str:
+    """Re-append a dropped trailing English phrase (e.g. 'X, help me out')."""
+    m = _TRAILING_ENGLISH_RE.search(source)
+    if not m:
+        return translation
+    phrase = m.group(1).strip()
+    if phrase.lower() in translation.lower():
+        return translation
+    translation = translation.rstrip()
+    if translation.endswith((".", "!", "?")):
+        translation = translation[:-1]
+    return f"{translation}, {phrase}.".strip()
+
+
+def _postprocess_translation(source: str, translation: str, target_lang: str) -> str:
+    """Deterministic post-processing: orthography fixes, proper-name
+    restoration, and preservation of trailing English phrases."""
+    if not translation:
+        return translation
+    if target_lang == "Spanish":
+        translation = _fix_orthography(translation)
+        translation = _fix_formal_register(translation)
+        translation = _fix_grammar(translation)
+    translation = _fix_currency_format(translation)
+    translation = _restore_proper_names(source, translation)
+    translation = _restore_trailing_person(source, translation)
+    translation = _restore_trailing_english(source, translation)
+    return translation
+
+
+# Informal → formal register corrections (curated, word-boundary safe).
+# Applied deterministically to Spanish output — the 3B model frequently
+# defaults to informal "tú" forms despite the prompt rule.
+_REGISTER_FORMAL_FIXES = [
+    ("para ti", "para usted"),
+    ("tú", "usted"),
+    ("tu", "su"),
+    ("tus", "sus"),
+    ("tienes", "tiene"),
+    ("puedes", "puede"),
+    ("estás", "está"),
+    ("quieres", "quiere"),
+    ("necesitas", "necesita"),
+    ("necesitarás", "necesitará"),
+    ("sabes", "sabe"),
+    ("dices", "dice"),
+    ("haces", "hace"),
+    ("eres", "es"),
+    ("vas", "va"),
+    ("dime", "dígame"),
+]
+
+
+def _fix_formal_register(text: str) -> str:
+    """Convert common informal (tú) forms to formal (usted) register."""
+    for informal, formal in _REGISTER_FORMAL_FIXES:
+        text = re.sub(rf"\b{re.escape(informal)}\b", formal, text, flags=re.IGNORECASE)
+    return text
+
+
+def _fix_currency_format(text: str) -> str:
+    """"X dólares con Y centavos" → "$X.YY" (also English "$X with Y cents")."""
+    text = re.sub(
+        r"\$?(\d+)\s+dólares?\s+con\s+(\d{1,2})\s+centavos?",
+        lambda m: f"${int(m.group(1)):,}.{int(m.group(2)):02d}",
+        text, flags=re.I)
+    text = re.sub(
+        r"\$(\d+)\s+with\s+(\d{1,2})\s+cents?",
+        lambda m: f"${int(m.group(1)):,}.{int(m.group(2)):02d}",
+        text, flags=re.I)
+    return text
+
+
+def _fix_grammar(text: str) -> str:
+    """"al número de WhatsApp mío" → "a mi número de WhatsApp"."""
+    text = re.sub(r"(?:al|el)\s+número\s+de\s+WhatsApp\s+mío", "a mi número de WhatsApp", text, flags=re.I)
+    text = re.sub(r"\bWhatsApp\s+mío\b", "mi WhatsApp", text, flags=re.I)
+    return text
+
+
 def _put_ui(ui_queue: multiprocessing.Queue, msg: dict, timeout: float = UI_PUT_TIMEOUT):
     """Best-effort delivery of a UI event with a bounded timeout."""
     try:
@@ -269,14 +455,42 @@ def _put_ui(ui_queue: multiprocessing.Queue, msg: dict, timeout: float = UI_PUT_
         logger.debug(f"[TRANSLATOR] ui_queue put failed: {e}")
 
 
+def _handle_partial(text: str, lang: str, source_lang: str, target_lang: str,
+                    context_history: list, ui_queue: multiprocessing.Queue,
+                    glossary_manager=None, speaker_note: str = "Unknown speaker."):
+    """Translate a growing (provisional) transcript while recording continues.
+
+    Provisional translations are best-effort previews: failures, echoes, and
+    same-language inputs are dropped silently — no terminal UI events, no
+    shared-context updates. The authoritative event always comes from the
+    final task.
+    """
+    if _detect_same_language(text, target_lang):
+        return
+    try:
+        result, _ = translate_ollama(
+            text, source_lang, target_lang, context_history,
+            glossary_manager=glossary_manager, speaker_note=speaker_note
+        )
+        if not result or _detect_same_language(result, source_lang):
+            return
+        result = _postprocess_translation(text, result, target_lang)
+        _put_ui(ui_queue, {"type": "provisional", "original": text, "translated": result}, timeout=2.0)
+    except Exception as e:
+        logger.debug(f"[TRANSLATOR] Provisional translation failed (dropped): {e}")
+
+
 def process_translation_task(task: tuple, context_history: list,
                              ui_queue: multiprocessing.Queue, timing: dict,
                              glossary_manager=None, speaker_note: str = "Unknown speaker.",
-                             shared_context: list = None, context_lock: threading.Lock = None):
+                             shared_context: list = None, context_lock: threading.Lock = None,
+                             is_partial: bool = False, provisional_sem: threading.Semaphore = None):
     """Processes a single translation task using Ollama. Propagates pipeline timing.
 
-    Guarantees a terminal UI event on every path: 'translation', 'skipped'
-    (same-language guard), or 'error' — never a silent return.
+    Guarantees a terminal UI event on every FINAL path: 'translation',
+    'skipped' (same-language guard), or 'error' — never a silent return.
+    Provisional (is_partial=True) tasks emit best-effort 'provisional'
+    preview events instead, and release provisional_sem when done.
 
     When shared_context and context_lock are provided the bilingual
     (source->translation) pair is appended after a successful translation,
@@ -286,6 +500,16 @@ def process_translation_task(task: tuple, context_history: list,
 
     target_lang = "Spanish" if lang == "en" else "English"
     source_lang = "English" if lang == "en" else "Spanish"
+
+    if is_partial:
+        try:
+            _handle_partial(text, lang, source_lang, target_lang, context_history,
+                            ui_queue, glossary_manager, speaker_note)
+        finally:
+            if provisional_sem is not None:
+                provisional_sem.release()
+        return
+
     logger.info(f"[TRANSLATOR] Task received: {lang} -> {target_lang}, {len(text)} chars")
 
     try:
@@ -324,6 +548,10 @@ def process_translation_task(task: tuple, context_history: list,
             )
             _put_ui(ui_queue, {"type": "error", "message": f"Translation output was not in {target_lang}."})
             return
+
+        # Deterministic post-processing: orthography, proper names, trailing
+        # English phrases — applied before delivery and history recording.
+        ollama_translation = _postprocess_translation(text, ollama_translation, target_lang)
 
         timing["translation_end"] = time.time()
         translation_elapsed = timing["translation_end"] - timing["translation_start"]
@@ -382,22 +610,36 @@ def start_translator(translation_queue: multiprocessing.Queue, ui_queue: multipr
     # Guards access with a lock since the main loop and executor threads share it.
     context_history = []
     context_lock = threading.Lock()
+    # Caps the number of in-flight provisional translations. Each one consumes
+    # a slot on the single Ollama server; without a cap, ~10 provisional calls
+    # queue ahead of the authoritative final translation, inflating
+    # stop->display to 14-32s on long recordings.
+    provisional_sem = threading.Semaphore(2)
     ui_queue.put({"type": "status", "process": "translator", "status": "ready"})
 
-    # We use a ThreadPoolExecutor to handle incoming requests concurrently without blocking the queue reader
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+    # We use a ThreadPoolExecutor to handle incoming requests concurrently without blocking the queue reader.
+    # Provisional (partial) tasks run on a SEPARATE single-thread executor so
+    # they can never delay a final task: at stop, the authoritative translation
+    # is always processed immediately.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor, \
+            concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="provisional") as partial_executor:
         while True:
             try:
                 task = translation_queue.get()
                 if task is None:
                     break
 
-                # Support both 2-element (legacy) and 3-element (with timing) tuples
-                if len(task) == 3:
+                # Support 4-element (partial+timing), 3-element (timing), and
+                # 2-element (legacy) tuples.
+                if len(task) == 4:
+                    text, lang, timing, is_partial = task
+                elif len(task) == 3:
                     text, lang, timing = task
+                    is_partial = False
                 else:
                     text, lang = task[:2]
                     timing = {}
+                    is_partial = False
 
                 # Snapshot the current bilingual history — never includes the
                 # current text (it goes only into <text_to_translate>, not
@@ -407,12 +649,24 @@ def start_translator(translation_queue: multiprocessing.Queue, ui_queue: multipr
                     context_snapshot = list(context_history)
 
                 # Submit to thread pool with glossary manager and shared context
-                executor.submit(
-                    process_translation_task,
-                    (text, lang), context_snapshot, ui_queue, timing,
-                    glossary_mgr, "Agent or client speaking — use formal register (usted).",
-                    context_history, context_lock
-                )
+                if is_partial:
+                    # Only submit if fewer than 2 provisional translations are
+                    # already in flight — otherwise the final's Ollama call
+                    # would queue behind the provisional backlog.
+                    if provisional_sem.acquire(blocking=False):
+                        partial_executor.submit(
+                            process_translation_task,
+                            (text, lang), context_snapshot, ui_queue, timing,
+                            glossary_mgr, "Agent or client speaking — use formal register (usted).",
+                            None, None, True, provisional_sem
+                        )
+                else:
+                    executor.submit(
+                        process_translation_task,
+                        (text, lang), context_snapshot, ui_queue, timing,
+                        glossary_mgr, "Agent or client speaking — use formal register (usted).",
+                        context_history, context_lock
+                    )
 
 
             except queue.Empty:

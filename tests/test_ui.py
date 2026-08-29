@@ -233,7 +233,18 @@ class TestMainWindow(unittest.TestCase):
         mock_reset.assert_not_called()
         self.assertIn("12.5", self.window.current_label.text())
         self.assertIn("Warning", self.window.current_label.text())
-        
+
+    def test_poll_queue_provisional(self):
+        """test_poll_queue_provisional - provisional preview shows translation without reset."""
+        with patch.object(self.window, '_reset_ui_state') as mock_reset:
+            self.ui_queue.get_nowait.side_effect = [
+                {"type": "provisional", "original": "Buenos días", "translated": "Good morning"},
+                queue.Empty
+            ]
+            self.window.poll_queue()
+        mock_reset.assert_not_called()
+        self.assertIn("Good morning", self.window.current_label.text())
+
     def test_poll_queue_error(self):
         """test_poll_queue_error - verify error queue item displays the error."""
         self.ui_queue.get_nowait.side_effect = [{"type": "error", "message": "API Failure"}, queue.Empty]
@@ -304,7 +315,8 @@ class TestMainWindow(unittest.TestCase):
         self.window.transcriber_ready = True
         self.window.translator_ready = True
         self.window.health_check = lambda: {"audio": True, "transcriber": False, "translator": True}
-        self.window.check_health()
+        self.window.check_health()  # 1st miss
+        self.window.check_health()  # 2nd consecutive miss → crash declared
         self.assertTrue(self.window._workers_dead)
         self.assertIn("Worker crash", self.window.current_label.text())
         self.assertIn("transcriber", self.window.current_label.text())
@@ -316,6 +328,27 @@ class TestMainWindow(unittest.TestCase):
         self.window.health_check = lambda: {"audio": False, "transcriber": False, "translator": False}
         self.window.check_health()
         self.assertFalse(self.window._workers_dead)
+
+    def test_check_health_requires_consecutive_misses(self):
+        """test_check_health_requires_consecutive_misses - a single miss is not a crash."""
+        self.window.transcriber_ready = True
+        self.window.translator_ready = True
+        self.window.health_check = lambda: {"audio": True, "transcriber": False, "translator": True}
+        self.window.check_health()  # 1st miss
+        self.assertFalse(self.window._workers_dead)
+        self.assertNotEqual(self.window.sys_status_label.text(), "System Error")
+        self.window.check_health()  # 2nd consecutive miss
+        self.assertTrue(self.window._workers_dead)
+
+    def test_check_health_silent_during_shutdown(self):
+        """test_check_health_silent_during_shutdown - watchdog stands down on close."""
+        self.window.transcriber_ready = True
+        self.window.translator_ready = True
+        self.window.health_check = lambda: {"audio": False, "transcriber": False, "translator": False}
+        self.window._shutting_down = True
+        self.window.check_health()
+        self.assertFalse(self.window._workers_dead)
+        self.assertNotEqual(self.window.sys_status_label.text(), "System Error")
 
 if __name__ == '__main__':
     unittest.main()

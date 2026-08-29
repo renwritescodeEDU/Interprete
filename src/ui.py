@@ -71,6 +71,8 @@ class MainWindow(QMainWindow):
         self._drag_pos = QPoint()
         self._audio_devices = []
         self._workers_dead = False
+        self._health_misses = 0
+        self._shutting_down = False
 
         self._setup_ui()
         self._center_on_screen()
@@ -300,22 +302,29 @@ class MainWindow(QMainWindow):
 
     def check_health(self):
         """Watchdog: flag a worker that died without sending an error event."""
+        if self._shutting_down:
+            return  # processes are being stopped intentionally — never a crash
         if not self.health_check:
             return
         if not (self.transcriber_ready or self.translator_ready):
             return  # workers not fully started yet
         status = self.health_check()
         dead = [name for name, alive in status.items() if not alive]
-        if dead and not self._workers_dead:
-            self._workers_dead = True
-            logger.error(f"[UI] Worker crash detected: {', '.join(dead)}")
-            self.current_label.show()
-            self.current_label.setText(f"<b>Worker crash:</b> {', '.join(dead)}. Restart the app.")
-            self.current_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 16px; padding: 16px; background-color: #450A0A; border: 1px solid #7F1D1D; border-radius: 8px;")
-            self.sys_status_label.setText("System Error")
-            self.sys_status_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 14px; font-weight: 500;")
-            self.action_btn.setEnabled(False)
-        elif not dead:
+        if dead:
+            # Require 2 consecutive misses to avoid false positives during
+            # transient states (e.g. a process briefly between restarts).
+            self._health_misses += 1
+            if self._health_misses >= 2 and not self._workers_dead:
+                self._workers_dead = True
+                logger.error(f"[UI] Worker crash detected: {', '.join(dead)}")
+                self.current_label.show()
+                self.current_label.setText(f"<b>Worker crash:</b> {', '.join(dead)}. Restart the app.")
+                self.current_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 16px; padding: 16px; background-color: #450A0A; border: 1px solid #7F1D1D; border-radius: 8px;")
+                self.sys_status_label.setText("System Error")
+                self.sys_status_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 14px; font-weight: 500;")
+                self.action_btn.setEnabled(False)
+        else:
+            self._health_misses = 0
             self._workers_dead = False
 
     def on_action_clicked(self):
@@ -448,6 +457,17 @@ class MainWindow(QMainWindow):
                             self.current_label.setText(f"<i>{text}</i>")
                             self.current_label.setStyleSheet("color: #94A3B8; font-style: italic; font-size: 18px; padding: 16px; background-color: #1E293B; border: 1px solid #334155; border-radius: 8px;")
                             logger.info(f"[UI] Final transcript ({len(text)} chars): '{text}'")
+                    elif msg_type == "provisional":
+                        # Live translation preview while recording continues.
+                        # Not added to history/log and never resets UI state —
+                        # the authoritative 'translation' event replaces it.
+                        original = item.get("original", "")
+                        translated = item.get("translated", "")
+                        if translated:
+                            self.current_label.show()
+                            self.current_label.setText(f"{original}\n→ {translated}")
+                            self.current_label.setStyleSheet("color: #D1FAE5; font-size: 18px; padding: 16px; background-color: #064E3B; border: 1px solid #047857; border-radius: 8px;")
+                            logger.debug(f"[UI] Provisional translation: '{translated}'")
                     elif msg_type == "translation":
                         ui_display_time = time.time()
                         original = item.get("original", "")
@@ -515,6 +535,9 @@ class MainWindow(QMainWindow):
             pass
 
     def closeEvent(self, event):
+        # Signal the watchdog to stand down — processes are being stopped
+        # intentionally, so a dead worker here is NOT a crash.
+        self._shutting_down = True
         self.stop_callback()
         event.accept()
 

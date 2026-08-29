@@ -34,6 +34,7 @@ class Orchestrator:
         self.translation_queue = multiprocessing.Queue(maxsize=MAX_QUEUE_SIZE)
         self.ui_queue = multiprocessing.Queue()
         self.control_queue = multiprocessing.Queue()
+        self.final_queue = multiprocessing.Queue()
         
         os.makedirs(LOGS_DIR, exist_ok=True)
         self.log_path = os.path.join(LOGS_DIR, f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
@@ -60,10 +61,10 @@ class Orchestrator:
             self._clear_queue(q)
         
         self.audio_process = multiprocessing.Process(
-            target=start_audio_capture, args=(self.asr_queue, self.control_queue, self.ui_queue, None), daemon=True
+            target=start_audio_capture, args=(self.asr_queue, self.control_queue, self.ui_queue, None, self.final_queue), daemon=True
         )
         self.asr_process = multiprocessing.Process(
-            target=start_transcriber, args=(self.asr_queue, self.translation_queue, self.ui_queue), daemon=True
+            target=start_transcriber, args=(self.asr_queue, self.translation_queue, self.ui_queue, self.final_queue), daemon=True
         )
         self.translator_process = multiprocessing.Process(
             target=start_translator, args=(self.translation_queue, self.ui_queue), daemon=True
@@ -85,11 +86,11 @@ class Orchestrator:
     def stop_processes(self):
         logger.info("Stopping background processes...")
         
-        for q in [self.control_queue, self.asr_queue, self.translation_queue]:
+        for q in [self.control_queue, self.asr_queue, self.translation_queue, self.final_queue]:
             self._clear_queue(q)
                     
         # Send poison pills
-        for q, msg in [(self.control_queue, "QUIT"), (self.asr_queue, None), (self.translation_queue, None)]:
+        for q, msg in [(self.control_queue, "QUIT"), (self.asr_queue, None), (self.translation_queue, None), (self.final_queue, None)]:
             try:
                 q.put_nowait(msg)
             except Exception as e:

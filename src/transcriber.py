@@ -21,6 +21,11 @@ TIMEOUT_GET = 1.0
 # Minimum probability for language detection to be trusted.
 # Fragments below this threshold are discarded to avoid inverted translations.
 LANGUAGE_CONFIDENCE_THRESHOLD = 0.60
+# Minimum accumulated-text growth (chars) before a provisional translation
+# task is forwarded to the translator. Throttles LLM load during recording.
+# With ~3s partials each chunk adds tens of characters, so a threshold of 25
+# still fires on every chunk while dropping near-no-op revisions.
+PARTIAL_PROGRESS_THRESHOLD = 25
 
 PROMPT_ES = "Hola. Esta es una transcripción en español perfecta, con excelente ortografía, puntuación y gramática."
 PROMPT_EN = "Hello. This is a perfect English transcription, with excellent spelling, punctuation, and grammar."
@@ -37,21 +42,40 @@ def _send_to_queue(q, msg, block=False, timeout=None, error_msg="Queue put faile
     return False
 
 def start_transcriber(
-    asr_queue: multiprocessing.Queue, translation_queue: multiprocessing.Queue, ui_queue: multiprocessing.Queue
+    asr_queue: multiprocessing.Queue, translation_queue: multiprocessing.Queue, ui_queue: multiprocessing.Queue,
+    final_queue: multiprocessing.Queue = None
 ):
     """
     Pulls audio chunks from asr_queue, transcribes them, and pushes (text, language, timing) tuples
     to translation_queue. Supports 3-element (legacy) and 4-element (with timing) tuples from audio.
+
+    When final_queue is provided, the authoritative final chunk arrives there and
+    is processed with priority — it is never queued behind the partial backlog.
     """
     model = WhisperModel(MODEL_SIZE, device="auto", compute_type=COMPUTE_TYPE)
     
     _send_to_queue(ui_queue, {"type": "status", "process": "transcriber", "status": "ready"})
 
     detected_language = None
+    # Progressive transcription: accumulated partial text used for live
+    # previews and for provisional translations while recording continues.
+    provisional_text = ""
+    last_provisional_sent_len = 0
 
     while True:
         try:
-            item = asr_queue.get(timeout=TIMEOUT_GET)
+            # Priority: if a final is waiting on the dedicated final queue,
+            # process it immediately instead of spending ~2s on the next
+            # partial. This keeps stop->display latency flat regardless of
+            # the partial backlog accumulated during long recordings.
+            item = None
+            if final_queue is not None:
+                try:
+                    item = final_queue.get_nowait()
+                except queue.Empty:
+                    pass
+            if item is None:
+                item = asr_queue.get(timeout=TIMEOUT_GET)
             if item is None or item == "QUIT":
                 break
 
@@ -68,6 +92,20 @@ def start_transcriber(
                 f"[TRANSCRIBER] Chunk received: {len(audio_data)} samples, "
                 f"rate={rate}, is_final={is_final}"
             )
+
+            # The final supersedes any stale partials still queued behind it.
+            # Drain them so the authoritative transcription isn't delayed by
+            # the partial backlog (observed 20s+ waits on long recordings).
+            # Careful: preserve the process-termination poison pill (QUIT/None).
+            if is_final:
+                while True:
+                    try:
+                        stale = asr_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    if stale is None or stale == "QUIT":
+                        asr_queue.put(stale)
+                        break
             
             # Guard clause: Empty audio
             if audio_data is None or len(audio_data) == 0:
@@ -135,9 +173,23 @@ def start_transcriber(
 
             # Valid text branch
             if not is_final:
-                _send_to_queue(ui_queue, {"type": "partial", "text": text})
+                # Accumulate the growing transcript (each partial covers the
+                # audio slice since the previous one).
+                provisional_text = (provisional_text + " " + text).strip()
+                _send_to_queue(ui_queue, {"type": "partial", "text": provisional_text})
+                # Progressive translation: forward the accumulated text as a
+                # provisional task so the LLM translates while the user is
+                # still speaking. Throttled by text growth to limit LLM load.
+                if len(provisional_text) - last_provisional_sent_len >= PARTIAL_PROGRESS_THRESHOLD:
+                    _send_to_queue(
+                        translation_queue, (provisional_text, info.language, {}, True),
+                        block=False, error_msg="translation_queue full, dropped provisional"
+                    )
+                    last_provisional_sent_len = len(provisional_text)
             else:
                 detected_language = None
+                provisional_text = ""
+                last_provisional_sent_len = 0
                 logger.info(
                     f"[TRANSCRIBER] Transcription completed in {transcription_elapsed:.3f}s "
                     f"({len(text)} chars): '{text}'"

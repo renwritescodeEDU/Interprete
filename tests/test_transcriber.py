@@ -202,6 +202,81 @@ class TestTranscriber(unittest.TestCase):
         self.assertIn("Whisper failed", error_msg["message"])
 
     @patch("src.transcriber.WhisperModel")
+    def test_transcriber_partial_sends_provisional_task(self, mock_whisper):
+        """Accumulated partials beyond the growth threshold are queued as provisional tasks."""
+        mock_model = MagicMock()
+        mock_whisper.return_value = mock_model
+        
+        mock_segment = MagicMock()
+        mock_segment.text = "This is a longer test utterance"
+        mock_info = MagicMock()
+        mock_info.language = "en"
+        mock_info.language_probability = 0.90
+        mock_model.transcribe.return_value = ([mock_segment], mock_info)
+        
+        self.asr_queue.put((b"audio", 16000, False))
+        self.asr_queue.put("QUIT")
+        
+        start_transcriber(self.asr_queue, self.translation_queue, self.ui_queue)
+        
+        # Partial (30 chars) exceeds PARTIAL_PROGRESS_THRESHOLD → 4-tuple with is_partial=True
+        msg = self.translation_queue.get_nowait()
+        self.assertEqual(len(msg), 4)
+        text, lang, timing, is_partial = msg
+        self.assertEqual(text, "This is a longer test utterance")
+        self.assertEqual(lang, "en")
+        self.assertTrue(is_partial)
+
+    @patch("src.transcriber.WhisperModel")
+    def test_transcriber_partial_below_threshold_not_queued(self, mock_whisper):
+        """Tiny partials under the growth threshold are not sent to the translator."""
+        mock_model = MagicMock()
+        mock_whisper.return_value = mock_model
+        
+        mock_segment = MagicMock()
+        mock_segment.text = "Hola"  # 4 chars < threshold
+        mock_info = MagicMock()
+        mock_info.language = "es"
+        mock_info.language_probability = 0.90
+        mock_model.transcribe.return_value = ([mock_segment], mock_info)
+        
+        self.asr_queue.put((b"audio", 16000, False))
+        self.asr_queue.put("QUIT")
+        
+        start_transcriber(self.asr_queue, self.translation_queue, self.ui_queue)
+        
+        self.assertTrue(self.translation_queue.empty())
+
+    @patch("src.transcriber.WhisperModel")
+    def test_transcriber_priority_final_queue(self, mock_whisper):
+        """A final on the dedicated priority queue is processed before queued partials."""
+        import queue as queue_mod
+        mock_model = MagicMock()
+        mock_whisper.return_value = mock_model
+
+        mock_segment = MagicMock()
+        mock_segment.text = "Hello world"
+        mock_info = MagicMock()
+        mock_info.language = "en"
+        mock_info.language_probability = 0.95
+        mock_model.transcribe.return_value = ([mock_segment], mock_info)
+
+        final_queue = queue_mod.Queue()
+        # Partial queued first on asr_queue; final arrives on the priority queue
+        self.asr_queue.put((b"partial_audio", 16000, False))
+        final_queue.put((b"final_audio", 16000, True, {"recording_stop": 1.0}))
+        self.asr_queue.put("QUIT")
+
+        start_transcriber(self.asr_queue, self.translation_queue, self.ui_queue, final_queue)
+
+        # The final is transcribed first and queued for translation as a 3-tuple
+        msg = self.translation_queue.get_nowait()
+        self.assertEqual(len(msg), 3)
+        text, lang, timing = msg
+        self.assertEqual(text, "Hello world")
+        self.assertEqual(lang, "en")
+
+    @patch("src.transcriber.WhisperModel")
     def test_transcriber_queue_full_emits_skipped(self, mock_whisper):
         """When translation_queue is full, a skipped terminal event must reach the UI."""
         from src import transcriber

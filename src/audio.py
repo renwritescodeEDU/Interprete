@@ -135,7 +135,7 @@ def _process_audio_frames(frames_list: list, actual_rate: int) -> np.ndarray:
     return audio_array
 
 
-def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multiprocessing.Queue, ui_queue=None, device_index=None):
+def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multiprocessing.Queue, ui_queue=None, device_index=None, final_queue: multiprocessing.Queue = None):
     """
     Captures audio strictly between START and FINISH commands,
     and pushes tuples of (audio_array, sample_rate, is_final) to asr_queue.
@@ -152,7 +152,10 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
         return
 
     frames = []
-    partial_threshold = int((1.0 * actual_rate) / buffer_size)  
+    # Emit a partial every ~3s of captured audio. Whisper needs a few seconds
+    # of context to transcribe coherently — 1s isolated chunks produced
+    # unusable partial previews and provisional translations.
+    partial_threshold = int((5.0 * actual_rate) / buffer_size)  
     frames_since_last_partial = 0
     partial_start_index = 0
     is_recording = False
@@ -214,20 +217,29 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
 
                     if frames:
                         audio_array = _process_audio_frames(frames, actual_rate)
+                        final_msg = (audio_array, RATE, True, timing)
                         try:
-                            asr_queue.put((audio_array, RATE, True, timing), block=True, timeout=2.0)
+                            if final_queue is not None:
+                                final_queue.put(final_msg, block=True, timeout=2.0)
+                            else:
+                                asr_queue.put(final_msg, block=True, timeout=2.0)
                             logger.info(
-                                f"[AUDIO] Final pushed to ASR queue: {len(frames)} frames "
-                                f"({len(audio_array)} samples, {recording_duration:.2f}s)"
+                                f"[AUDIO] Final pushed to "
+                                f"{'final queue' if final_queue is not None else 'ASR queue'}: "
+                                f"{len(frames)} frames ({len(audio_array)} samples, {recording_duration:.2f}s)"
                             )
                         except queue.Full:
-                            logger.error("asr_queue full, dropped final audio chunk")
+                            logger.error("queue full, dropped final audio chunk")
                     else:
+                        empty_msg = (np.array([], dtype=np.float32), RATE, True, timing)
                         try:
-                            asr_queue.put((np.array([], dtype=np.float32), RATE, True, timing), block=True, timeout=2.0)
-                            logger.info("[AUDIO] Final (empty) pushed to ASR queue")
+                            if final_queue is not None:
+                                final_queue.put(empty_msg, block=True, timeout=2.0)
+                            else:
+                                asr_queue.put(empty_msg, block=True, timeout=2.0)
+                            logger.info(f"[AUDIO] Final (empty) pushed to {'final queue' if final_queue is not None else 'ASR queue'}")
                         except queue.Full:
-                            logger.error("asr_queue full, dropped final empty chunk")
+                            logger.error("final queue full, dropped final empty chunk")
                             
                     frames = []
                     frames_since_last_partial = 0
@@ -247,13 +259,13 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                             
                         try:
                             stream, actual_rate, buffer_size = _open_stream(p, new_device_index)
-                            partial_threshold = int((1.0 * actual_rate) / buffer_size)
+                            partial_threshold = int((5.0 * actual_rate) / buffer_size)
                             device_index = new_device_index
                         except RuntimeError as e:
                             logger.error(f"Failed to switch device: {e}. Reopening previous...")
                             try:
                                 stream, actual_rate, buffer_size = _open_stream(p, device_index)
-                                partial_threshold = int((1.0 * actual_rate) / buffer_size)
+                                partial_threshold = int((5.0 * actual_rate) / buffer_size)
                             except RuntimeError:
                                 logger.critical("FATAL: Cannot reopen any audio device.")
                                 break
