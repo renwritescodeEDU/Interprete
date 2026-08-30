@@ -732,10 +732,11 @@ class TestTranslator(unittest.TestCase):
     # --- Block 3: Hardware-aware model selection (Phase 7) ---
 
     def test_active_llm_model_is_valid(self):
-        """ACTIVE_LLM_MODEL must be one of the valid tier models."""
+        """After the 8.1 rollback ACTIVE_LLM_MODEL is the SLA-optimized 3B
+        (unless the user explicitly overrides via preferences)."""
         self.assertIn(
             translator.ACTIVE_LLM_MODEL,
-            (translator.LLM_MODEL, "llama3.1:8b", "qwen2.5:7b"),
+            (translator.LLM_MODEL,),
         )
 
     @patch('src.translator.ollama.pull')

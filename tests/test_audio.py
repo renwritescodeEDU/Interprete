@@ -569,6 +569,41 @@ class TestAutoCommit(unittest.TestCase):
         self.assertEqual(len(post_finals), 0,
                          f"FINISH with residual silence should not add finals; got {len(post_finals)}")
 
+    def test_audio_auto_commit_max_duration(self):
+        """Continuous speech with no pauses must be committed by the 12 s
+        ceiling (SLA: Stop never leaves more than ~12 s in the final buffer)."""
+        asr_queue = queue.Queue()
+        control_queue = queue.Queue()
+        start_ts = time.time()
+        control_queue.put(("START", start_ts))
+
+        t = threading.Thread(target=self._run_capture, args=(
+            self._reader((400, 0)), start_ts, control_queue, asr_queue))
+        t.start()
+
+        commit = None
+        deadline = time.time() + 8.0
+        while time.time() < deadline:
+            try:
+                item = asr_queue.get_nowait()
+                if isinstance(item, tuple) and len(item) == 4 and item[2] is True:
+                    commit = item
+                    break
+            except queue.Empty:
+                time.sleep(0.05)
+        control_queue.put("QUIT")
+        t.join(timeout=5.0)
+        self.assertFalse(t.is_alive(), "capture thread did not exit")
+        self.assertIsNotNone(commit, "max-duration auto-commit never emitted")
+
+        audio_array, rate, is_final, timing = commit
+        self.assertTrue(is_final)
+        # 400 frames × 480 samples = exactly 12 s at 16 kHz — the commit must
+        # fire the moment the ceiling is crossed, without waiting for silence.
+        self.assertEqual(len(audio_array), 400 * 480,
+                         f"max-duration commit must contain 12 s of audio, got {len(audio_array)} samples")
+        self.assertGreaterEqual(timing["recording_stop"], timing["recording_start"])
+
 
 if __name__ == '__main__':
     unittest.main()

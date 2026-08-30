@@ -26,17 +26,15 @@ logger = logging.getLogger(__name__)
 # Whisper tiers by VRAM (GB)
 VRAM_TIER_HEAVY = 8.0    # GPU >= 8 GB -> medium + float16
 VRAM_TIER_MID = 4.0      # GPU 4-8 GB -> small + float16
-# Ollama LLM tiers by VRAM (GB): heavy needs a comfortable GPU, mid fits
-# 6 GB cards via Q4 quantization + a reduced 2048-token context.
-LLM_HEAVY_VRAM_GB = 8.0
-LLM_MID_VRAM_GB = 5.5
 
 # Absolute fallback models
 DEFAULT_WHISPER_MODEL = "small"
 DEFAULT_WHISPER_COMPUTE = "int8"
+# LLM: SLA-optimized default. The 3B model generates tokens fast enough for
+# the stop->display budget; translation quality is enforced by the strict
+# interpreter prompt rather than by a heavier model. Users may still override
+# via preferences.json (llm_model).
 DEFAULT_LLM_MODEL = "llama3.2:3b"
-HEAVY_LLM_MODEL = "llama3.1:8b"
-MID_LLM_MODEL = "qwen2.5:7b"
 
 
 def _dlls_loadable(libs):
@@ -209,8 +207,10 @@ def select_whisper_config(prefs: dict = None) -> dict:
 def select_llm_model(prefs: dict = None) -> str:
     """Choose the Ollama LLM for this machine.
 
-    User override (llm_model) wins; otherwise the heavier 8B model only
-    when a CUDA device with >= 8 GB VRAM is available. Falls back to 3B.
+    User override (``llm_model``) wins; otherwise ALWAYS the SLA-optimized
+    ``llama3.2:3b`` — token generation speed is what meets the stop->display
+    budget, and translation quality is handled by the strict interpreter
+    prompt in ``src.translator`` (anti-echo, no filler).
     """
     if prefs is None:
         prefs = load_preferences()
@@ -220,19 +220,5 @@ def select_llm_model(prefs: dict = None) -> str:
         logger.info(f"[OLLAMA] User override: llm_model={model}")
         return model
 
-    profile = get_hardware_profile()
-    if profile.device == "cuda" and profile.vram_gb >= LLM_HEAVY_VRAM_GB:
-        logger.info(
-            f"[OLLAMA] Auto-selected heavy model {HEAVY_LLM_MODEL} "
-            f"(GPU {profile.vram_gb:.1f} GB VRAM)."
-        )
-        return HEAVY_LLM_MODEL
-    if profile.device == "cuda" and profile.vram_gb >= LLM_MID_VRAM_GB:
-        logger.info(
-            f"[OLLAMA] Auto-selected mid model {MID_LLM_MODEL} "
-            f"(GPU {profile.vram_gb:.1f} GB VRAM — fits with Q4 + 2048 context)."
-        )
-        return MID_LLM_MODEL
-
-    logger.info(f"[OLLAMA] Auto-selected model {DEFAULT_LLM_MODEL} (CPU or modest GPU).")
+    logger.info(f"[OLLAMA] Auto-selected model {DEFAULT_LLM_MODEL} (SLA-optimized).")
     return DEFAULT_LLM_MODEL

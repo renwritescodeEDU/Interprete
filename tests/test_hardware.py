@@ -10,8 +10,6 @@ from unittest.mock import MagicMock, patch
 from src import hardware
 from src.hardware import (
     DEFAULT_LLM_MODEL,
-    HEAVY_LLM_MODEL,
-    MID_LLM_MODEL,
     HardwareProfile,
     get_hardware_profile,
     select_llm_model,
@@ -136,18 +134,13 @@ class TestLLMSelection(_HardwareBase):
         self.assertEqual(select_llm_model(prefs={}), DEFAULT_LLM_MODEL)
 
     @patch("src.hardware.get_hardware_profile", return_value=HardwareProfile("cuda", 16.0, True))
-    def test_cuda_high_vram_heavy_llm(self, mock_profile):
-        """GPU >= 8 GB -> the heavier, idiom-capable model."""
-        self.assertEqual(select_llm_model(prefs={}), HEAVY_LLM_MODEL)
+    def test_cuda_high_vram_still_default_llm(self, mock_profile):
+        """Even a powerful GPU uses the SLA-optimized 3B model (rollback 8.1)."""
+        self.assertEqual(select_llm_model(prefs={}), DEFAULT_LLM_MODEL)
 
     @patch("src.hardware.get_hardware_profile", return_value=HardwareProfile("cuda", 6.0, True))
-    def test_cuda_6gb_selects_mid_llm(self, mock_profile):
-        """GPU 5.5-8 GB -> the mid 7B model (fits 6 GB via Q4)."""
-        self.assertEqual(select_llm_model(prefs={}), MID_LLM_MODEL)
-
-    @patch("src.hardware.get_hardware_profile", return_value=HardwareProfile("cuda", 4.0, True))
-    def test_cuda_low_vram_default_llm(self, mock_profile):
-        """GPU < 5.5 GB -> keep the 3B model."""
+    def test_cuda_6gb_still_default_llm(self, mock_profile):
+        """A 6 GB GPU also uses the default 3B model."""
         self.assertEqual(select_llm_model(prefs={}), DEFAULT_LLM_MODEL)
 
     def test_user_override_llm_wins(self):

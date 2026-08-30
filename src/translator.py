@@ -197,7 +197,8 @@ def _warmup_ollama(ui_queue) -> bool:
     return True
 
 TRANSLATION_PROMPT_TEMPLATE = """\
-<task>Simultaneous interpreter for live professional calls. {source_lang} → {target_lang}.</task>
+SYSTEM: You are a direct bilingual interpreter for live professional calls. Your job is to translate {source_lang} → {target_lang}.
+Translate exactly. DO NOT echo the source text. If the sentence is incomplete, translate it exactly as it is without trying to finish it. DO NOT add conversational filler, explanations, or commentary — only the translation.
 
 <rules>
 {register_rule}
