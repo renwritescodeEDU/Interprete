@@ -38,6 +38,15 @@ class GlossaryManager:
         self._common_terms: dict = {}         # common/universal terms
         self._loaded = False
         self._current_industry: Optional[str] = None  # sticky industry for the session
+        # Precomputed lowercase lookups (built by load_all) so the hot
+        # matching paths never re-lowercase terms or keywords per call.
+        self._industry_kw_en_lower: dict = {}   # industry_id -> [lowercased en keywords]
+        self._industry_kw_es_lower: dict = {}   # industry_id -> [lowercased es keywords]
+        self._industry_terms_lower: dict = {}   # industry_id -> [(lower, original, es)]
+
+    def _build_terms_lower(self, terms: dict):
+        """[(lower, original, es)] preserving insertion order of ``terms``."""
+        return [(term.lower(), term, es) for term, es in terms.items()]
 
     def load_all(self) -> None:
         """Load all glossary JSON files from the glossaries directory."""
@@ -70,6 +79,15 @@ class GlossaryManager:
                     self._glossaries[industry_id] = data
                     term_count = len(data.get("terms", {}))
                     logger.info(f"Loaded glossary '{industry_id}' with {term_count} terms")
+                    self._industry_kw_en_lower[industry_id] = [
+                        kw.lower() for kw in data.get("detection_keywords_en", [])
+                    ]
+                    self._industry_kw_es_lower[industry_id] = [
+                        kw.lower() for kw in data.get("detection_keywords_es", [])
+                    ]
+                    self._industry_terms_lower[industry_id] = self._build_terms_lower(
+                        data.get("terms", {})
+                    )
 
                 loaded_count += 1
             except Exception as e:
@@ -95,11 +113,11 @@ class GlossaryManager:
 
         for industry_id, glossary in self._glossaries.items():
             score = 0
-            for kw in glossary.get("detection_keywords_en", []):
-                if kw.lower() in combined_text:
+            for kw in self._industry_kw_en_lower.get(industry_id, []):
+                if kw in combined_text:
                     score += 1
-            for kw in glossary.get("detection_keywords_es", []):
-                if kw.lower() in combined_text:
+            for kw in self._industry_kw_es_lower.get(industry_id, []):
+                if kw in combined_text:
                     score += 1
 
             # Accept even 1 keyword match when no industry is yet known (first phrase)
@@ -147,8 +165,8 @@ class GlossaryManager:
         # 2. Match industry-specific terms against input text
         if industry_id and industry_id in self._glossaries:
             industry_terms = self._glossaries[industry_id].get("terms", {})
-            for en_term, es_term in industry_terms.items():
-                if en_term.lower() in text_lower:
+            for term_lower, en_term, es_term in self._industry_terms_lower.get(industry_id, []):
+                if term_lower in text_lower:
                     matched_terms[en_term] = es_term
 
             # 3. If few matches, add some high-frequency terms from the industry

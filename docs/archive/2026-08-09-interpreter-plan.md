@@ -1,5 +1,10 @@
 # Interpreter Implementation Plan
 
+> **ARCHIVED (2026-08-30):** Historical implementation plan for the original
+> macOS-only architecture (MarianMT, Silero VAD, MPS, BlackHole). The shipped
+> implementation diverged significantly; see `README.md` for the current
+> architecture. Retained for reference only.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a real-time, 100% offline English <-> Spanish translation and transcription system for macOS Apple Silicon, using multiprocessing to avoid UI blocking.

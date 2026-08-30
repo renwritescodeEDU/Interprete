@@ -671,6 +671,59 @@ class TestTranslator(unittest.TestCase):
         self.assertIn("checking account = cuenta corriente", prompt_content)
 
 
+    def test_ollama_client_has_request_timeout(self):
+        """The module must configure Ollama's global client with a timeout.
+
+        Without a timeout a hung Ollama server would block worker threads
+        forever. This pins the invariant the translation worker relies on.
+        """
+        import httpx
+        client = translator.ollama._client
+        self.assertIsNotNone(client)
+        self.assertEqual(
+            client._client.timeout,
+            httpx.Timeout(translator.OLLAMA_TIMEOUT),
+        )
+
+    @patch('src.translator.ollama.Client')
+    def test_configure_ollama_client_applies_timeout(self, mock_client_cls):
+        """_configure_ollama_client must apply OLLAMA_TIMEOUT to the global client."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        original = translator.ollama._client
+        try:
+            translator._configure_ollama_client()
+            mock_client_cls.assert_called_once_with(timeout=translator.OLLAMA_TIMEOUT)
+            self.assertIs(translator.ollama._client, mock_client)
+            self.assertTrue(translator._ollama_client_configured)
+        finally:
+            translator.ollama._client = original
+
+    @patch('src.translator._configure_ollama_client')
+    def test_ensure_ollama_client_retries_when_unconfigured(self, mock_cfg):
+        """A failed initial configuration must be retried lazily."""
+        with patch.object(translator, '_ollama_client_configured', False):
+            translator._ensure_ollama_client()
+        mock_cfg.assert_called_once()
+
+    @patch('src.translator._configure_ollama_client')
+    def test_ensure_ollama_client_noop_when_configured(self, mock_cfg):
+        """Once configured, the guard must be a no-op."""
+        with patch.object(translator, '_ollama_client_configured', True):
+            translator._ensure_ollama_client()
+        mock_cfg.assert_not_called()
+
+    @patch('src.translator.ollama.chat', return_value={'message': {'content': '{"translation": "Hola"}'}})
+    def test_translate_ollama_retries_client_config(self, mock_chat):
+        """translate_ollama must re-apply the timeout if it was never configured."""
+        with patch.object(translator, '_ollama_client_configured', False), \
+             patch('src.translator._configure_ollama_client') as mock_cfg:
+            self.mock_time.side_effect = [1.0, 2.0]
+            text, latency = translator.translate_ollama("Hello", "English", "Spanish", [])
+        mock_cfg.assert_called_once()
+        self.assertEqual(text, "Hola")
+
+
 class TestGlossaryModule(unittest.TestCase):
     """Test the glossary module independently."""
 

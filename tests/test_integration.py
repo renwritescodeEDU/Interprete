@@ -5,7 +5,7 @@ These tests are marked 'slow' and are NOT run by default (use
 `pytest -m slow`). They require the real stack to be available:
 
 - faster-whisper model "small" downloaded
-- Ollama running with the qwen2.5:3b model
+- Ollama running with the llama3.2:3b model
 - an audio input device (microphone or BlackHole virtual device)
 
 They exist to validate the ~2s stop->display budget on target hardware
@@ -68,7 +68,13 @@ class TestPipelineLatency:
         processes = [
             multiprocessing.Process(
                 target=start_audio_capture,
-                args=(asr_queue, control_queue, ui_queue, None),
+                # Keyword args keep this aligned with the signature if the
+                # worker gains more optional parameters (device_index etc.).
+                kwargs={
+                    "asr_queue": asr_queue,
+                    "control_queue": control_queue,
+                    "ui_queue": ui_queue,
+                },
                 daemon=True,
             ),
             multiprocessing.Process(

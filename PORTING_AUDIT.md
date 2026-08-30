@@ -23,7 +23,7 @@ The UI failure you experienced is **not a fundamental Qt-on-Windows incompatibil
 4. **First run downloads models over the network** (~460 MB faster-whisper "small" + ~2 GB llama3.2:3b). The design doc claims "100% offline / air-gapped" — this is now inaccurate and is a hard blocker on air-gapped Windows machines.
 5. **`WA_TranslucentBackground` + frameless windows** are a known Windows-only hazard: they can render as an invisible/black window under RDP, VMs without GPU compositing, or when desktop composition is disabled. This is the most plausible cause of "window never appears" on Windows when the code itself did not crash.
 
-None of these are "macOS-specific dependencies" in the code — the remaining macOS artifacts are **documentation only** (`instructions_blackhole.md`, the design doc, and the Apple-only CSS font stack in `src/ui.py:98`).
+None of these are "macOS-specific dependencies" in the code — the remaining macOS artifacts are **documentation only** (`docs/archive/instructions_blackhole.md`, the design doc, and the Apple-only CSS font stack in `src/ui.py:98`).
 
 ---
 
@@ -70,8 +70,8 @@ Cross-platform verdict per module:
 
 ### 1.2 macOS-specific artifacts found
 
-1. **`instructions_blackhole.md`** — BlackHole is a macOS virtual audio driver installed via Homebrew (`brew install blackhole-2ch`). The **code does not hardcode BlackHole** (devices are enumerated dynamically in `src/audio.py`), so this is documentation-only. Windows needs an equivalent loopback solution (see §4).
-2. **`docs/superpowers/specs/2026-08-09-interpreter-design.md`** — explicitly targets "macOS (Apple Silicon)", `device="mps"`, BlackHole, air-gapped. The implementation has already diverged (uses `device="auto"` + Ollama), so the spec is stale.
+1. **`docs/archive/instructions_blackhole.md`** — BlackHole is a macOS virtual audio driver installed via Homebrew (`brew install blackhole-2ch`). The **code does not hardcode BlackHole** (devices are enumerated dynamically in `src/audio.py`), so this is documentation-only. Windows needs an equivalent loopback solution (see §4).
+2. **`docs/archive/2026-08-09-interpreter-design.md`** — explicitly targets "macOS (Apple Silicon)", `device="mps"`, BlackHole, air-gapped. The implementation has already diverged (uses `device="auto"` + Ollama), so the spec is stale.
 3. **`src/ui.py:98`** — `font_family = '-apple-system, BlinkMacSystemFont, "Segoe UI", ...'`. `-apple-system` and `BlinkMacSystemFont` are **CSS web font names**, not Qt font families. Qt silently ignores unknown families, so it is not fatal, but it is dead weight on Windows and should be replaced with a Qt-native approach.
 4. **`.gitignore`** — contains `.DS_Store` (harmless), no Windows-specific entries needed.
 
@@ -209,7 +209,7 @@ Keep macOS/BlackHole steps, add a Windows section:
 - Prerequisites checklist: working microphone (verify in Windows Sound settings), Ollama running, network for first-run model downloads.
 
 **B4. Refresh the stale design spec**
-Update `docs/superpowers/specs/2026-08-09-interpreter-design.md` to drop the macOS-only claims (MPS, air-gap as a hard requirement, BlackHole-only routing) or explicitly mark them "macOS notes."
+Update `docs/archive/2026-08-09-interpreter-design.md` to drop the macOS-only claims (MPS, air-gap as a hard requirement, BlackHole-only routing) or explicitly mark them "macOS notes."
 
 ### Phase C — Optional enhancements
 

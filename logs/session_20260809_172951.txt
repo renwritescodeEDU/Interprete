@@ -1,9 +1,0 @@
-[17:30:33] Original: Hola, ¿qué tal? ¿Qué tal? Ah, sí yo la hola. Eh, bueno entonces, sí es... Oh, my god, no te vuelvo a loco.
-[17:30:33] Traducido: Oh, yes, I do. Uh, well then, yes, it is... oh, my god, I won't drive you crazy.
-----------------------------------------
-[17:30:50] Original: Nobody said thank you.
-[17:30:50] Traducido: # Y tú, # # Tú, # # Tú, # # Tú, # # Tú, # # Tú, # # Tú, # # Tú, # # Tú, # # Tú, # # Tú, # # Tú, # # Tú, # # Tú, # # Tú, # # Tú, # #
-----------------------------------------
-[17:34:43] Original: All right, I guess you're an okay pro-do Re-combinator. I've certainly seen worse Ionic cell to Accination. If this works, drinks are on me.
-[17:34:43] Traducido: De acuerdo, supongo que eres un buen recombinador pro-hecho, ciertamente he visto peores células jónicas a Accination, si esto funciona, las bebidas corren por mi cuenta.
-----------------------------------------

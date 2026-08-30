@@ -1,5 +1,10 @@
 # Configuración de BlackHole en macOS
 
+> **ARCHIVED (2026-08-30):** macOS-only virtual-audio driver setup. The current
+> cross-platform audio routing guide lives in
+> [`docs/audio_routing.md`](../audio_routing.md) (macOS BlackHole + Windows
+> VB-CABLE / Stereo Mix / Listen-to-this-device). Retained for reference only.
+
 1. Instalar BlackHole: `brew install blackhole-2ch`
 2. Abrir **Configuración de Audio MIDI** (Audio MIDI Setup) en macOS.
 3. Hacer clic en el `+` (abajo a la izquierda) y crear un **Dispositivo de Salida Múltiple** (Multi-Output Device).

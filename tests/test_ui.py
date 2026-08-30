@@ -352,5 +352,57 @@ class TestMainWindow(unittest.TestCase):
         self.assertFalse(self.window._workers_dead)
         self.assertNotEqual(self.window.sys_status_label.text(), "System Error")
 
+    @patch('src.ui.MainWindow._add_to_history')
+    @patch('src.ui.MainWindow._log_message')
+    @patch('src.ui.MainWindow._reset_ui_state')
+    def test_poll_queue_logs_pipeline_timing(self, mock_reset, mock_log_message, mock_add_to_history):
+        """The stop->display pipeline timing line must use the exact current format."""
+        timing = {
+            "recording_start": 100.0,
+            "recording_stop": 102.0,
+            "transcription_start": 102.1,
+            "transcription_end": 102.5,
+            "translation_start": 102.5,
+            "translation_end": 103.0,
+        }
+        self.ui_queue.get_nowait.side_effect = [
+            {"type": "translation", "original": "hello", "translated": "hola",
+             "latency": 0.5, "timing": timing},
+            queue.Empty,
+        ]
+        with patch('src.ui.time.time', return_value=103.5), \
+             patch('src.ui.logger.info') as mock_log_info:
+            self.window.poll_queue()
+        pipeline = [c.args[0] for c in mock_log_info.call_args_list
+                    if c.args and str(c.args[0]).startswith("[PIPELINE]")]
+        self.assertEqual(len(pipeline), 1)
+        self.assertIn("Recording: 2.00s", pipeline[0])
+        self.assertIn("Transcription: 0.400s", pipeline[0])
+        self.assertIn("Translation: 0.500s", pipeline[0])
+        self.assertIn("TOTAL (stop->display): 1.500s [OK]", pipeline[0])
+
+    def test_pipeline_timing_slow_tag(self):
+        """Total beyond the 2s budget must be flagged [SLOW]."""
+        timing = {
+            "recording_start": 100.0,
+            "recording_stop": 102.0,
+            "transcription_start": 102.1,
+            "transcription_end": 102.5,
+            "translation_start": 102.5,
+            "translation_end": 103.0,
+        }
+        self.ui_queue.get_nowait.side_effect = [
+            {"type": "translation", "original": "hello", "translated": "hola",
+             "latency": 0.5, "timing": timing},
+            queue.Empty,
+        ]
+        with patch('src.ui.time.time', return_value=105.0), \
+             patch('src.ui.logger.info') as mock_log_info:
+            self.window.poll_queue()
+        pipeline = [c.args[0] for c in mock_log_info.call_args_list
+                    if c.args and str(c.args[0]).startswith("[PIPELINE]")]
+        self.assertEqual(len(pipeline), 1)
+        self.assertIn("TOTAL (stop->display): 3.000s [SLOW]", pipeline[0])
+
 if __name__ == '__main__':
     unittest.main()

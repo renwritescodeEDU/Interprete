@@ -11,6 +11,7 @@ import concurrent.futures
 import ollama
 
 from src.glossary import get_glossary_manager
+from src.queueutil import put_best_effort
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +42,32 @@ MAX_LENGTH_RATIO = 8.0
 
 # Apply a request timeout to the module-level client used by ollama.chat/show/pull.
 # Without this, a hung Ollama server blocks worker threads indefinitely.
-try:
-    ollama._client = ollama.Client(timeout=OLLAMA_TIMEOUT)
-except Exception as e:
-    logger.warning(f"Could not configure Ollama client timeout: {e}")
+_ollama_client_configured = False
+
+
+def _configure_ollama_client() -> None:
+    """Apply OLLAMA_TIMEOUT to the global Ollama client.
+
+    ollama's module-level helpers route through ``ollama._client``; setting
+    its timeout guarantees a hung server cannot block a worker thread
+    forever. Kept idempotent so it can be re-applied lazily if the first
+    attempt fails.
+    """
+    global _ollama_client_configured
+    try:
+        ollama._client = ollama.Client(timeout=OLLAMA_TIMEOUT)
+        _ollama_client_configured = True
+    except Exception as e:
+        logger.warning(f"Could not configure Ollama client timeout: {e}")
+
+
+def _ensure_ollama_client() -> None:
+    """Re-apply the request timeout if the initial configuration failed."""
+    if not _ollama_client_configured:
+        _configure_ollama_client()
+
+
+_configure_ollama_client()
 
 # How long to wait for the Ollama server to answer after (re)starting it.
 OLLAMA_START_TIMEOUT = 60.0
@@ -131,6 +154,7 @@ def _ensure_ollama_running(ui_queue, timeout: float = OLLAMA_START_TIMEOUT) -> b
 
 def _warmup_ollama(ui_queue) -> bool:
     """Ensure the model is present and pre-warm it. Returns True on success."""
+    _ensure_ollama_client()
     logger.info(f"Checking if model {LLM_MODEL} is available locally...")
     try:
         ollama.show(LLM_MODEL)
@@ -266,8 +290,6 @@ def _detect_same_language(text: str, target_lang: str) -> bool:
     return False
 
 
-
-
 def _validate_translation(source: str, translation: str) -> bool:
     """Sanity-validate model output so garbage never reaches the UI as a translation."""
     if not isinstance(translation, str) or not translation.strip():
@@ -286,6 +308,7 @@ def translate_ollama(text: str, source_lang: str, target_lang: str,
     Returns (None, latency) on any failure — invalid JSON, unexpected shape,
     or implausible output. Callers must treat None as an error, never as text.
     """
+    _ensure_ollama_client()
     start_t = time.time()
 
     # Take only the last CONTEXT_LIMIT turns. Context entries are bilingual
@@ -600,10 +623,8 @@ def _fix_grammar(text: str) -> str:
 
 def _put_ui(ui_queue: multiprocessing.Queue, msg: dict, timeout: float = UI_PUT_TIMEOUT):
     """Best-effort delivery of a UI event with a bounded timeout."""
-    try:
-        ui_queue.put(msg, block=True, timeout=timeout)
-    except Exception as e:
-        logger.debug(f"[TRANSLATOR] ui_queue put failed: {e}")
+    put_best_effort(ui_queue, msg, block=True, timeout=timeout,
+                    debug_msg="[TRANSLATOR] ui_queue put failed")
 
 
 def _handle_partial(text: str, lang: str, source_lang: str, target_lang: str,

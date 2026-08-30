@@ -67,7 +67,7 @@ it shows "Waiting for microphone…" and re-probes every few seconds. Plug in a 
 To interpret the client's side of the call you must route the call audio (CRM, browser,
 phone app) into the system as an input device:
 
-- **macOS:** install BlackHole (see `instructions_blackhole.md`)
+- **macOS:** install BlackHole (see [`docs/audio_routing.md`](docs/audio_routing.md))
 - **Windows:** use VB-CABLE, Stereo Mix, or Windows "Listen to this device"
   (see [`docs/audio_routing.md`](docs/audio_routing.md))
 

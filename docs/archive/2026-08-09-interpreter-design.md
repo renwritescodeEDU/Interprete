@@ -1,5 +1,12 @@
 # Real-Time Interpreter & Transcription System Design
 
+> **ARCHIVED (2026-08-30):** Historical design document. Describes the original
+> macOS-only architecture (Apple Silicon MPS, MarianMT/transformers, BlackHole,
+> "100% air-gapped"), which the implementation has since replaced with a
+> cross-platform pipeline (faster-whisper + Ollama llama3.2:3b, device="auto").
+> See `README.md` and `docs/audio_routing.md` for the current behavior.
+> Retained for reference only — do not treat as current requirements.
+
 ## 1. Overview
 A professional-grade, air-gapped, real-time English <-> Spanish translation and transcription system for macOS (Apple Silicon). Built to act as a visual safety net for an interpreter during Customer Service calls.
 

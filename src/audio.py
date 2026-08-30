@@ -2,9 +2,12 @@ import multiprocessing
 import queue
 import time
 import logging
+import fractions
 import numpy as np
 import pyaudio
 import scipy.signal
+
+from src.queueutil import put_best_effort
 
 # Constants
 CHUNK = 480  # 30ms at 16000Hz
@@ -46,10 +49,7 @@ def _safe_ui_put(ui_queue, msg: dict, block: bool = False, timeout: float = 2.0)
     """Best-effort delivery of a UI event. ui_queue is optional."""
     if ui_queue is None:
         return
-    try:
-        ui_queue.put(msg, block=block, timeout=timeout)
-    except Exception:
-        pass
+    put_best_effort(ui_queue, msg, block=block, timeout=timeout)
 
 
 def _clean_device_name(name):
@@ -255,7 +255,6 @@ def _process_audio_frames(frames_list: list, actual_rate: int) -> np.ndarray:
     audio_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
     if actual_rate != RATE:
-        import fractions
         frac = fractions.Fraction(RATE, actual_rate)
         audio_array = scipy.signal.resample_poly(audio_array, frac.numerator, frac.denominator)
 

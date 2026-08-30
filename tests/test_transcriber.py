@@ -201,7 +201,7 @@ class TestTranscriber(unittest.TestCase):
         q = queue.Queue(maxsize=1)
         q.put("first")
         
-        with patch("src.transcriber.logger.error") as mock_error:
+        with patch("src.queueutil.logger.error") as mock_error:
             _send_to_queue(q, "second", block=True, timeout=0.01, error_msg="Queue is full")
             mock_error.assert_called_once_with("Queue is full")
 
@@ -210,7 +210,7 @@ class TestTranscriber(unittest.TestCase):
         mock_queue = MagicMock()
         mock_queue.put.side_effect = Exception("General error")
         
-        with patch("src.transcriber.logger.debug") as mock_debug:
+        with patch("src.queueutil.logger.debug") as mock_debug:
             _send_to_queue(mock_queue, "message")
             mock_debug.assert_called_once()
             self.assertIn("Queue communication error", mock_debug.call_args[0][0])

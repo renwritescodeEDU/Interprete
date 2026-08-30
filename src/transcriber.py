@@ -7,6 +7,8 @@ import time
 import logging
 from faster_whisper import WhisperModel
 
+from src.queueutil import put_best_effort
+
 logger = logging.getLogger(__name__)
 
 # Constants
@@ -164,15 +166,10 @@ PROMPT_ES = "Hola. Esta es una transcripción en español perfecta, con excelent
 PROMPT_EN = "Hello. This is a perfect English transcription, with excellent spelling, punctuation, and grammar."
 
 def _send_to_queue(q, msg, block=False, timeout=None, error_msg="Queue put failed"):
-    try:
-        q.put(msg, block=block, timeout=timeout)
-        return True
-    except queue.Full:
-        if block:
-            logger.error(error_msg)
-    except Exception as e:
-        logger.debug(f"Queue communication error: {e}")
-    return False
+    return put_best_effort(
+        q, msg, block=block, timeout=timeout,
+        error_msg=error_msg, debug_msg="Queue communication error",
+    )
 
 
 def _create_model():

@@ -41,6 +41,21 @@ DEVICE_POLL_INTERVAL_MS = 3000
 
 logger = logging.getLogger(__name__)
 
+
+def _pipeline_timing_values(timing: dict, now: float):
+    """Extract pipeline durations from a timing dict (best-effort).
+
+    Returns (rec_dur, trans_dur, tl_dur, total) or (0, 0, 0, 0) if
+    required keys are missing.
+    """
+    if not timing.get("recording_start") or not timing.get("recording_stop"):
+        return 0.0, 0.0, 0.0, 0.0
+    rec_dur = timing["recording_stop"] - timing["recording_start"]
+    trans_dur = timing.get("transcription_end", 0) - timing.get("transcription_start", 0) if timing.get("transcription_start") else 0
+    tl_dur = timing.get("translation_end", 0) - timing.get("translation_start", 0) if timing.get("translation_start") else 0
+    total = now - timing["recording_stop"]
+    return rec_dur, trans_dur, tl_dur, total
+
 def _load_config():
     """Load saved preferences from disk."""
     try:
@@ -459,7 +474,6 @@ class MainWindow(QMainWindow):
         if not is_error:
             self.current_label.hide()
             self.current_label.setText("")
-        if not is_error:
             self.update_system_readiness()
         self.action_btn.setProperty("state", "idle")
         self.action_btn.style().unpolish(self.action_btn)
@@ -516,10 +530,7 @@ class MainWindow(QMainWindow):
                 f"[{timestamp}] Traducido: {translated}",
             ]
             if timing and timing.get("recording_start") and timing.get("recording_stop"):
-                rec_dur = timing["recording_stop"] - timing["recording_start"]
-                trans_dur = timing.get("transcription_end", 0) - timing.get("transcription_start", 0) if timing.get("transcription_start") else 0
-                tl_dur = timing.get("translation_end", 0) - timing.get("translation_start", 0) if timing.get("translation_start") else 0
-                total = time.time() - timing["recording_stop"]
+                rec_dur, trans_dur, tl_dur, total = _pipeline_timing_values(timing, time.time())
                 status_tag = "OK" if total <= 2.0 else "SLOW"
                 lines.append(f"[{timestamp}] Pipeline: rec={rec_dur:.2f}s | asr={trans_dur:.3f}s | tl={tl_dur:.3f}s | total={total:.3f}s [{status_tag}]")
             with open(self.log_path, "a", encoding="utf-8") as f:
@@ -631,10 +642,7 @@ class MainWindow(QMainWindow):
 
                         # Log full pipeline timing if available
                         if timing.get("recording_start") and timing.get("recording_stop"):
-                            rec_dur = timing["recording_stop"] - timing["recording_start"]
-                            trans_dur = timing.get("transcription_end", 0) - timing.get("transcription_start", 0) if timing.get("transcription_start") else 0
-                            tl_dur = timing.get("translation_end", 0) - timing.get("translation_start", 0) if timing.get("translation_start") else 0
-                            total = ui_display_time - timing["recording_stop"]
+                            rec_dur, trans_dur, tl_dur, total = _pipeline_timing_values(timing, ui_display_time)
                             status_tag = "[OK]" if total <= 2.0 else "[SLOW]"
                             logger.info(
                                 f"[PIPELINE] Recording: {rec_dur:.2f}s | "
