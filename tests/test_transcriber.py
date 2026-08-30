@@ -344,5 +344,34 @@ class TestTranscriber(unittest.TestCase):
         self.assertEqual(skipped[0]["reason"], "queue_full")
         self.assertEqual(skipped[0]["stage"], "translation")
 
+
+class TestModelSelection(unittest.TestCase):
+    """Hardware-aware whisper model selection (Phase 7)."""
+
+    @patch("src.transcriber.select_whisper_config",
+           return_value={"model": "medium", "compute_type": "float16", "device": "cuda"})
+    @patch("src.transcriber.WhisperModel")
+    def test_create_model_uses_resolved_config(self, mock_whisper, mock_select):
+        """_create_model must instantiate WhisperModel with the resolved config."""
+        from src.transcriber import _create_model
+        _create_model()
+        mock_whisper.assert_called_once_with(
+            "medium", device="cuda", compute_type="float16"
+        )
+
+    @patch("src.transcriber.select_whisper_config",
+           return_value={"model": "medium", "compute_type": "float16", "device": "cuda"})
+    @patch("src.transcriber.WhisperModel")
+    def test_create_model_degrades_to_cpu_on_cuda_failure(self, mock_whisper, mock_select):
+        """CUDA creation failure must fall back to CPU small/int8, never crash."""
+        mock_whisper.side_effect = [RuntimeError("CUDA init failed"), MagicMock()]
+        from src.transcriber import _create_model
+        _create_model()
+        self.assertEqual(mock_whisper.call_count, 2)
+        args, kwargs = mock_whisper.call_args
+        self.assertEqual(kwargs.get("device"), "cpu")
+        self.assertEqual(kwargs.get("compute_type"), "int8")
+
+
 if __name__ == "__main__":
     unittest.main()

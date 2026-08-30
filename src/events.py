@@ -47,6 +47,7 @@ STATUS_WAITING = "waiting"
 STATUS_OLLAMA_WAITING = "ollama_waiting"
 STATUS_OLLAMA_OFFLINE = "ollama_offline"
 STATUS_MODEL_DOWNLOAD = "model_download"
+STATUS_MODEL_FALLBACK = "model_fallback"
 
 # --- Process names ---
 PROCESS_AUDIO = "audio"

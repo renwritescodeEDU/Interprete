@@ -50,7 +50,7 @@ class TestUI(unittest.TestCase):
         self.assertTrue(hasattr(MainWindow, '_log_message'))
         self.assertTrue(hasattr(MainWindow, '_reset_ui_state'))
 
-    @patch('src.ui.os.path.exists')
+    @patch('src.config.os.path.exists')
     def test_load_config_missing_file(self, mock_exists):
         """test_load_config_missing_file - verify returns empty dict when file doesn't exist."""
         mock_exists.return_value = False
@@ -62,8 +62,8 @@ class TestUI(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             config_file = os.path.join(tmp_dir, "preferences.json")
             test_config = {"test_key": "test_value", "number": 42}
-            
-            with patch('src.ui.CONFIG_FILE', config_file), patch('src.ui.CONFIG_DIR', tmp_dir):
+
+            with patch('src.ui.CONFIG_FILE', config_file):
                 _save_config(test_config)
                 self.assertTrue(os.path.exists(config_file))
                 loaded_config = _load_config()
@@ -423,6 +423,16 @@ class TestMainWindow(unittest.TestCase):
             self.window.current_label.text(), "",
             "B3 BUG: provisional updated current_label even though is_recording=False"
         )
+
+    def test_poll_queue_status_model_fallback(self):
+        """model_fallback status must be surfaced in the system status label."""
+        self.ui_queue.get_nowait.side_effect = [
+            {"type": "status", "process": "translator", "status": "model_fallback", "model": "llama3.2:3b"},
+            queue.Empty,
+        ]
+        self.window.poll_queue()
+        self.assertIn("llama3.2:3b", self.window.sys_status_label.text())
+        self.assertIn("fallback", self.window.sys_status_label.text())
 
 if __name__ == '__main__':
     unittest.main()

@@ -44,7 +44,7 @@ class TestTranslator(unittest.TestCase):
         self.assertEqual(latency, 1.5)
         mock_chat.assert_called_once()
         args, kwargs = mock_chat.call_args
-        self.assertEqual(kwargs['model'], translator.LLM_MODEL)
+        self.assertEqual(kwargs['model'], translator.ACTIVE_LLM_MODEL)
         self.assertEqual(kwargs['format'], 'json')
         self.assertIn("Prev Context", kwargs['messages'][0]['content'])
 
@@ -722,6 +722,69 @@ class TestTranslator(unittest.TestCase):
             text, latency = translator.translate_ollama("Hello", "English", "Spanish", [])
         mock_cfg.assert_called_once()
         self.assertEqual(text, "Hola")
+
+    # --- Block 3: Hardware-aware model selection (Phase 7) ---
+
+    def test_active_llm_model_is_valid(self):
+        """ACTIVE_LLM_MODEL must be either the default 3B or the heavy 8B."""
+        self.assertIn(
+            translator.ACTIVE_LLM_MODEL,
+            (translator.LLM_MODEL, "llama3.1:8b"),
+        )
+
+    @patch('src.translator.ollama.pull')
+    @patch('src.translator.ollama.chat')
+    @patch('src.translator.ollama.show',
+           side_effect=translator.ollama.ResponseError("not found", 404))
+    def test_warmup_downloads_missing_model(self, mock_show, mock_chat, mock_pull):
+        """A 404 from show() must trigger pull(), then warmup chat with the
+        same heavy model, and emit a model_download UI event."""
+        ui_queue = MagicMock()
+        with patch.object(translator, 'ACTIVE_LLM_MODEL', "llama3.1:8b"):
+            ok = translator._warmup_ollama(ui_queue)
+        self.assertTrue(ok)
+        mock_pull.assert_called_once_with("llama3.1:8b")
+        mock_chat.assert_called_once()
+        _, chat_kwargs = mock_chat.call_args
+        self.assertEqual(chat_kwargs['model'], "llama3.1:8b")
+        status_msgs = [c.args[0] for c in ui_queue.put.call_args_list
+                       if c.args and c.args[0].get("type") == "status"]
+        download = [m for m in status_msgs if m.get("status") == "model_download"]
+        self.assertEqual(len(download), 1)
+        self.assertEqual(download[0]["model"], "llama3.1:8b")
+
+    @patch('src.translator.ollama.pull', side_effect=RuntimeError("pull failed"))
+    @patch('src.translator.ollama.chat')
+    @patch('src.translator.ollama.show',
+           side_effect=translator.ollama.ResponseError("not found", 404))
+    def test_warmup_falls_back_on_pull_failure(self, mock_show, mock_chat, mock_pull):
+        """When pull() fails, ACTIVE_LLM_MODEL must degrade to the default 3B,
+        the fallback must be reported to the UI, and warmup must use the 3B."""
+        ui_queue = MagicMock()
+        with patch.object(translator, 'ACTIVE_LLM_MODEL', "llama3.1:8b"):
+            ok = translator._warmup_ollama(ui_queue)
+        self.assertTrue(ok)
+        self.assertEqual(translator.ACTIVE_LLM_MODEL, translator.LLM_MODEL)
+        mock_chat.assert_called_once()
+        _, chat_kwargs = mock_chat.call_args
+        self.assertEqual(chat_kwargs['model'], translator.LLM_MODEL)
+        status_msgs = [c.args[0] for c in ui_queue.put.call_args_list
+                       if c.args and c.args[0].get("type") == "status"]
+        fallback = [m for m in status_msgs if m.get("status") == "model_fallback"]
+        self.assertEqual(len(fallback), 1)
+        self.assertEqual(fallback[0]["model"], translator.LLM_MODEL)
+
+    @patch('src.translator.ollama.chat')
+    @patch('src.translator.ollama.show', return_value={})
+    def test_warmup_uses_active_model(self, mock_show, mock_chat):
+        """Warmup must call ollama.chat with the ACTIVE_LLM_MODEL."""
+        ui_queue = MagicMock()
+        with patch.object(translator, 'ACTIVE_LLM_MODEL', "llama3.1:8b"):
+            ok = translator._warmup_ollama(ui_queue)
+        self.assertTrue(ok)
+        mock_chat.assert_called_once()
+        _, chat_kwargs = mock_chat.call_args
+        self.assertEqual(chat_kwargs['model'], "llama3.1:8b")
 
 
 class TestGlossaryModule(unittest.TestCase):

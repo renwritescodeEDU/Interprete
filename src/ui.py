@@ -1,8 +1,6 @@
 import multiprocessing
 import queue
 import sys
-import os
-import json
 import time
 import logging
 from datetime import datetime
@@ -14,6 +12,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QListView
 )
 from src.audio import list_audio_devices
+from src.config import CONFIG_FILE, load_preferences, save_preferences
 from src.events import (
     TYPE_CANCEL,
     TYPE_ERROR,
@@ -26,10 +25,7 @@ from src.events import (
     TYPE_TRUNCATED,
 )
 
-# Constants
-CONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".config")
-CONFIG_FILE = os.path.join(CONFIG_DIR, "preferences.json")
-
+# Constants (CONFIG_FILE is imported from src.config)
 # Styling Constants
 COLOR_BG = "rgba(15, 23, 42, 220)"
 COLOR_TEXT_PRIMARY = "#F8FAFC"
@@ -68,23 +64,13 @@ def _pipeline_timing_values(timing: dict, now: float):
     return rec_dur, trans_dur, tl_dur, total
 
 def _load_config():
-    """Load saved preferences from disk."""
-    try:
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception as e:
-        logger.warning(f"Failed to load config: {e}")
-    return {}
+    """Load saved preferences from disk (delegates to src.config)."""
+    return load_preferences(CONFIG_FILE)
+
 
 def _save_config(config):
-    """Save preferences to disk."""
-    try:
-        os.makedirs(CONFIG_DIR, exist_ok=True)
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.warning(f"Failed to save config: {e}")
+    """Save preferences to disk (delegates to src.config)."""
+    save_preferences(config, CONFIG_FILE)
 
 class MainWindow(QMainWindow):
     def __init__(self, ui_queue: multiprocessing.Queue, control_queue: multiprocessing.Queue, stop_callback, log_path: str, health_check=None):
@@ -638,6 +624,11 @@ class MainWindow(QMainWindow):
         elif process == "translator" and status == "model_download":
             model = item.get("model", "the translation model")
             self.sys_status_label.setText(f"Downloading {model}...")
+            self.sys_status_label.setStyleSheet(f"color: {COLOR_WARNING}; font-size: 14px; font-weight: 500;")
+        elif process == "translator" and status == "model_fallback":
+            model = item.get("model", "the translation model")
+            logger.warning(f"[UI] Translation model fallback active: {model}")
+            self.sys_status_label.setText(f"Using fallback model {model}")
             self.sys_status_label.setStyleSheet(f"color: {COLOR_WARNING}; font-size: 14px; font-weight: 500;")
 
     def _handle_partial(self, item):

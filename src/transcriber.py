@@ -1,8 +1,6 @@
-import ctypes
 import multiprocessing
 import os
 import queue
-import sys
 import time
 import logging
 from faster_whisper import WhisperModel
@@ -15,137 +13,21 @@ from src.events import (
     ui_skipped,
     ui_status,
 )
+from src.hardware import (
+    DEFAULT_WHISPER_COMPUTE,
+    DEFAULT_WHISPER_MODEL,
+    get_hardware_profile,
+    select_whisper_config,
+)
 from src.queueutil import put_best_effort
 
 logger = logging.getLogger(__name__)
 
-# Constants
-MODEL_SIZE = "small"
-COMPUTE_TYPE = "int8"
-
-
-def _dlls_loadable(libs):
-    """True if every DLL in `libs` can be loaded from the current search path."""
-    for lib in libs:
-        try:
-            ctypes.windll.LoadLibrary(lib)
-        except Exception:
-            return False
-    return True
-
-
-def _locate_cuda_bin():
-    """Locate the CUDA 12 Toolkit bin directory (where cublas64_12.dll lives).
-
-    Checks the CUDA_PATH* environment variables set by the NVIDIA installer
-    first, then scans the default install root for the newest v12.x. Returns
-    the bin path as a string, or None if not found.
-    """
-    import glob
-
-    candidates = []
-    # Environment variables set by the CUDA installer (CUDA_PATH / CUDA_PATH_V12_x)
-    for var in (
-        "CUDA_PATH", "CUDA_PATH_V12_8", "CUDA_PATH_V12_7", "CUDA_PATH_V12_6",
-        "CUDA_PATH_V12_5", "CUDA_PATH_V12_4", "CUDA_PATH_V12_3", "CUDA_PATH_V12_2",
-        "CUDA_PATH_V12_1", "CUDA_PATH_V12_0",
-    ):
-        val = os.environ.get(var)
-        if val:
-            candidates.append(os.path.join(val, "bin"))
-
-    # Default install root: prefer the highest v12.x found.
-    if sys.platform == "win32":
-        root = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
-        for d in sorted(glob.glob(os.path.join(root, "v12.*")), reverse=True):
-            candidates.append(os.path.join(d, "bin"))
-
-    for cand in candidates:
-        if os.path.isfile(os.path.join(cand, "cublas64_12.dll")):
-            return cand
-    return None
-
-
-def _detect_device():
-    """Probe for a usable CUDA environment; always fall back to CPU.
-
-    faster-whisper / CTranslate2 loads its CUDA libraries (cuBLAS/cuDNN)
-    LAZILY at transcribe time — not when the model is created. So a machine
-    with an NVIDIA driver but no matching CUDA *runtime* (or a runtime whose
-    bin directory is not on PATH) crashes on the first audio chunk with
-    "Library cublas64_12.dll is not found or cannot be loaded". This function
-    checks ahead of time whether the required runtime is actually loadable —
-    auto-locating the CUDA Toolkit and adding it to the process DLL search
-    path if needed — and only then asks CTranslate2 how many GPUs it sees.
-    Any failure → "cpu".
-
-    Returns:
-        "cuda" if a loadable, visible CUDA device exists, else "cpu".
-    """
-    # macOS: CTranslate2 has no MPS/GPU backend — CPU is the only option.
-    if sys.platform == "darwin":
-        logger.info("[TRANSCRIBER] macOS detected — using CPU (no CUDA backend).")
-        return "cpu"
-
-    if sys.platform == "win32":
-        required = ("cublas64_12.dll", "cublasLt64_12.dll", "cudart64_12.dll")
-        if not _dlls_loadable(required):
-            # The DLLs exist in the toolkit but aren't on PATH. Find the
-            # toolkit and add its bin dir to this process's DLL search path
-            # so the lazy load at transcribe time succeeds.
-            cuda_bin = _locate_cuda_bin()
-            if cuda_bin and hasattr(os, "add_dll_directory"):
-                try:
-                    os.add_dll_directory(cuda_bin)
-                    logger.info(
-                        f"[TRANSCRIBER] Added CUDA Toolkit bin to the DLL "
-                        f"search path: {cuda_bin}"
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"[TRANSCRIBER] Could not add {cuda_bin} to the DLL "
-                        f"search path: {e}"
-                    )
-            if not _dlls_loadable(required):
-                logger.warning(
-                    "[TRANSCRIBER] CUDA 12 runtime not loadable — falling back to CPU."
-                )
-                return "cpu"
-
-    # All platforms: confirm CTranslate2 actually sees a usable GPU.
-    try:
-        import ctranslate2
-        count = ctranslate2.get_cuda_device_count()
-        if count > 0:
-            logger.info(f"[TRANSCRIBER] CUDA detected: {count} device(s) — using GPU.")
-            return "cuda"
-        logger.info("[TRANSCRIBER] No CUDA device detected by CTranslate2 — using CPU.")
-    except Exception as e:
-        logger.warning(
-            f"[TRANSCRIBER] CUDA probe failed ({e}) — falling back to CPU."
-        )
-
-    return "cpu"
-
-
-# Inference device. Auto-detect by default (CUDA on capable machines, CPU
-# everywhere else) with an explicit override for power users:
-#   INTERPRETE_DEVICE=cuda  -> prefer GPU (falls back to CPU if unusable)
-#   INTERPRETE_DEVICE=cpu   -> force CPU
-_detected_device = _detect_device()
-_requested_device = os.environ.get("INTERPRETE_DEVICE")
-if _requested_device == "cpu":
-    DEVICE = "cpu"
-elif _requested_device == "cuda":
-    DEVICE = "cuda" if _detected_device == "cuda" else "cpu"
-    if DEVICE != "cuda":
-        logger.warning(
-            "[TRANSCRIBER] INTERPRETE_DEVICE=cuda was set, but the CUDA 12 "
-            "runtime is not loadable — using CPU instead."
-        )
-else:
-    DEVICE = _detected_device
-logger.info(f"[TRANSCRIBER] Using inference device: {DEVICE}")
+# Constants (absolute CPU fallback; the real selection happens in
+# `_resolve_whisper_config` / src.hardware).
+MODEL_SIZE = DEFAULT_WHISPER_MODEL
+COMPUTE_TYPE = DEFAULT_WHISPER_COMPUTE
+DEVICE = get_hardware_profile().device
 # Beam size for the FINAL transcription of a recorded utterance.
 BEAM_SIZE = 5
 # Beam size for live PARTIAL transcripts. Beam search is the dominant CPU
@@ -180,24 +62,55 @@ def _send_to_queue(q, msg, block=False, timeout=None, error_msg="Queue put faile
     )
 
 
-def _create_model():
-    """Create the WhisperModel, transparently falling back to CPU.
+def _resolve_whisper_config() -> dict:
+    """Resolve the whisper model/compute/device for this machine.
 
-    The device probe in `_detect_device` covers the common lazy-load failure
-    (missing CUDA 12 runtime), but creation can still fail for other
-    GPU-related reasons. If creating on the detected device raises, retry
-    once on CPU so the pipeline never dies on model initialization.
+    Precedence: ``INTERPRETE_DEVICE`` env override > user preferences >
+    hardware auto-scaling (see ``src.hardware``). Never raises.
     """
-    if DEVICE == "cpu":
-        return WhisperModel(MODEL_SIZE, device="cpu", compute_type=COMPUTE_TYPE)
+    cfg = select_whisper_config()
+    requested = os.environ.get("INTERPRETE_DEVICE")
+    if requested == "cpu":
+        cfg = {"model": MODEL_SIZE, "compute_type": "int8", "device": "cpu"}
+        logger.warning(
+            "[TRANSCRIBER] INTERPRETE_DEVICE=cpu forces CPU (small/int8)."
+        )
+    elif requested == "cuda":
+        if get_hardware_profile().device == "cuda":
+            cfg["device"] = "cuda"
+        else:
+            cfg["device"] = "cpu"
+            logger.warning(
+                "[TRANSCRIBER] INTERPRETE_DEVICE=cuda set, but no usable CUDA "
+                "runtime — using CPU instead."
+            )
+    return cfg
+
+
+def _create_model():
+    """Create the WhisperModel using the resolved hardware config, with a
+    guaranteed CPU fallback so the pipeline never dies on model init.
+
+    Creation on CUDA can still fail (missing runtime, driver mismatch);
+    if it raises, retry once on CPU with the safe small/int8 fallback.
+    """
+    cfg = _resolve_whisper_config()
+    if cfg["device"] == "cpu":
+        logger.info(
+            f"[TRANSCRIBER] Creating WhisperModel(model={cfg['model']}, "
+            f"device=cpu, compute_type={cfg['compute_type']})."
+        )
+        return WhisperModel(cfg["model"], device="cpu", compute_type=cfg["compute_type"])
     try:
-        model = WhisperModel(MODEL_SIZE, device=DEVICE, compute_type=COMPUTE_TYPE)
-        logger.info(f"[TRANSCRIBER] Model created on {DEVICE}.")
-        return model
+        logger.info(
+            f"[TRANSCRIBER] Creating WhisperModel(model={cfg['model']}, "
+            f"device=cuda, compute_type={cfg['compute_type']})."
+        )
+        return WhisperModel(cfg["model"], device="cuda", compute_type=cfg["compute_type"])
     except Exception as e:
-        logger.error(
-            f"[TRANSCRIBER] Model creation on {DEVICE} failed ({e}) — "
-            f"falling back to CPU."
+        logger.warning(
+            f"[TRANSCRIBER] Model creation on CUDA failed ({e}) — falling "
+            f"back to CPU (model={MODEL_SIZE}, compute_type={COMPUTE_TYPE})."
         )
         return WhisperModel(MODEL_SIZE, device="cpu", compute_type=COMPUTE_TYPE)
 

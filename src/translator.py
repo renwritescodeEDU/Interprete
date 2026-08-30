@@ -12,6 +12,7 @@ import ollama
 
 from src.events import ui_error, ui_provisional, ui_skipped, ui_status, ui_translation
 from src.glossary import get_glossary_manager
+from src.hardware import select_llm_model
 from src.queueutil import put_best_effort
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,12 @@ logger = logging.getLogger(__name__)
 # directions. qwen2.5:3b echoes the source language on Spanish->English,
 # which no output validation could fully compensate for.
 LLM_MODEL = "llama3.2:3b"
+# Runtime model selection: hardware-scaling or user override (Phase 7).
+# This is the model actually used by _warmup_ollama and translate_ollama.
+# Kept as a modifiable module global so a failed pull of the heavy model
+# can degrade it to the fallback at runtime.
+ACTIVE_LLM_MODEL = select_llm_model()
+logger.info(f"[TRANSLATOR] Active LLM model: {ACTIVE_LLM_MODEL}")
 CONTEXT_LIMIT = 5
 # Per-request timeout for Ollama calls (seconds). Prevents a hung server
 # from blocking a worker thread forever. Sized to cover the worst-case
@@ -154,23 +161,34 @@ def _ensure_ollama_running(ui_queue, timeout: float = OLLAMA_START_TIMEOUT) -> b
 
 
 def _warmup_ollama(ui_queue) -> bool:
-    """Ensure the model is present and pre-warm it. Returns True on success."""
+    """Ensure the active model is present and pre-warm it. Returns True on success."""
+    global ACTIVE_LLM_MODEL
     _ensure_ollama_client()
-    logger.info(f"Checking if model {LLM_MODEL} is available locally...")
+    model = ACTIVE_LLM_MODEL
+    logger.info(f"Checking if model {model} is available locally...")
     try:
-        ollama.show(LLM_MODEL)
+        ollama.show(model)
     except ollama.ResponseError as e:
         if e.status_code == 404:
-            logger.info(f"Model {LLM_MODEL} not found. Downloading (this may take a while)...")
-            _put_ui(ui_queue, ui_status("translator", "model_download", model=LLM_MODEL))
-            ollama.pull(LLM_MODEL)
-            logger.info(f"Model {LLM_MODEL} downloaded successfully.")
+            logger.info(f"Model {model} not found. Downloading (this may take a while)...")
+            _put_ui(ui_queue, ui_status("translator", "model_download", model=model))
+            try:
+                ollama.pull(model)
+                logger.info(f"Model {model} downloaded successfully.")
+            except Exception as e2:
+                logger.warning(
+                    f"Failed to download model {model} ({e2}) — "
+                    f"falling back to {LLM_MODEL}."
+                )
+                ACTIVE_LLM_MODEL = LLM_MODEL
+                _put_ui(ui_queue, ui_status("translator", "model_fallback", model=LLM_MODEL))
+                model = ACTIVE_LLM_MODEL
         else:
             raise e
 
-    logger.info(f"Warming up Ollama with model {LLM_MODEL}...")
+    logger.info(f"Warming up Ollama with model {model}...")
     ollama.chat(
-        model=LLM_MODEL,
+        model=model,
         messages=[{'role': 'user', 'content': '{"test":"hi"}'}],
         format='json',
         options={'temperature': 0.0},
@@ -360,7 +378,7 @@ def translate_ollama(text: str, source_lang: str, target_lang: str,
     response = None
     try:
         response = ollama.chat(
-            model=LLM_MODEL,
+            model=ACTIVE_LLM_MODEL,
             messages=[{'role': 'user', 'content': prompt}],
             format='json',
             options={
