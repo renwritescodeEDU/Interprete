@@ -237,7 +237,9 @@ class TestMainWindow(unittest.TestCase):
         self.assertIn("Warning", self.window.current_label.text())
 
     def test_poll_queue_provisional(self):
-        """test_poll_queue_provisional - provisional preview shows translation without reset."""
+        """test_poll_queue_provisional - while recording, provisional preview
+        shows translation without resetting UI state."""
+        self.window.is_recording = True
         with patch.object(self.window, '_reset_ui_state') as mock_reset:
             self.ui_queue.get_nowait.side_effect = [
                 {"type": "provisional", "original": "Buenos días", "translated": "Good morning"},
@@ -403,6 +405,24 @@ class TestMainWindow(unittest.TestCase):
                     if c.args and str(c.args[0]).startswith("[PIPELINE]")]
         self.assertEqual(len(pipeline), 1)
         self.assertIn("TOTAL (stop->display): 3.000s [SLOW]", pipeline[0])
+
+    def test_late_provisional_does_not_override_reset(self):
+        """A provisional arriving after the UI has been reset (is_recording=False)
+        must NOT update current_label. This test FAILS on the current code (B3 bug)."""
+        self.window._reset_ui_state()
+        self.window.is_recording = False
+        self.window.current_label.hide()
+        self.window.current_label.setText("")
+
+        self.ui_queue.get_nowait.side_effect = [
+            {"type": "provisional", "original": "Buenos días", "translated": "Good morning"},
+            queue.Empty,
+        ]
+        self.window.poll_queue()
+        self.assertEqual(
+            self.window.current_label.text(), "",
+            "B3 BUG: provisional updated current_label even though is_recording=False"
+        )
 
 if __name__ == '__main__':
     unittest.main()

@@ -7,6 +7,7 @@ import numpy as np
 import pyaudio
 import scipy.signal
 
+from src.events import ui_error, ui_status, ui_truncated
 from src.queueutil import put_best_effort
 
 # Constants
@@ -261,6 +262,36 @@ def _process_audio_frames(frames_list: list, actual_rate: int) -> np.ndarray:
     return audio_array
 
 
+def _drain_queue(q):
+    """Drain a multiprocessing queue without raising.
+
+    multiprocessing Queue.empty() is unreliable across processes, so drain
+    with get_nowait() until it raises.
+    """
+    while True:
+        try:
+            q.get_nowait()
+        except queue.Empty:
+            break
+
+
+def _push_final(asr_queue, final_queue, audio_array, timing, note=""):
+    """Push the authoritative final chunk to the priority queue (or ASR queue).
+
+    The final chunk is never queued behind stale partials: when
+    ``final_queue`` is provided it receives the message; otherwise the
+    regular ASR queue is used as a fallback.
+    """
+    final_msg = (audio_array, RATE, True, timing)
+    target = final_queue if final_queue is not None else asr_queue
+    queue_name = "final queue" if final_queue is not None else "ASR queue"
+    try:
+        target.put(final_msg, block=True, timeout=2.0)
+        logger.info(f"[AUDIO] Final{note} pushed to {queue_name}")
+    except queue.Full:
+        logger.error(f"{queue_name} full, dropped final audio chunk")
+
+
 def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multiprocessing.Queue, ui_queue=None, device_index=None, final_queue: multiprocessing.Queue = None):
     """
     Captures audio strictly between START and FINISH commands,
@@ -273,6 +304,9 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
     transitions ("waiting" / "ready") are reported to the UI so the user sees
     a recoverable "connect a microphone" state instead of a dead pipeline.
     """
+    # Local copy of the pinned device: SET_DEVICE below updates this local,
+    # never the function parameter, so the signature stays read-only.
+    current_device_index = device_index
     p = None
     stream = None
     actual_rate = None
@@ -306,9 +340,9 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                 logger.warning(f"PyAudio initialization failed: {e}")
                 return False
 
-        if device_index is not None:
+        if current_device_index is not None:
             try:
-                stream, actual_rate, buffer_size = _open_stream(p, device_index)
+                stream, actual_rate, buffer_size = _open_stream(p, current_device_index)
                 partial_threshold = int((5.0 * actual_rate) / buffer_size)
                 return True
             except RuntimeError as e:
@@ -328,10 +362,10 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
     # Report the outcome either way so the UI's audio_ready flag tracks the
     # worker's actual state from the very first moment.
     if _try_open_stream():
-        _safe_ui_put(ui_queue, {"type": "status", "process": "audio", "status": "ready"})
+        _safe_ui_put(ui_queue, ui_status("audio", "ready"))
     else:
         waiting_reported = True
-        _safe_ui_put(ui_queue, {"type": "status", "process": "audio", "status": "waiting"})
+        _safe_ui_put(ui_queue, ui_status("audio", "waiting"))
 
     try:
         while True:
@@ -352,7 +386,7 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                         logger.warning("START ignored: no microphone available.")
                         if not waiting_reported:
                             waiting_reported = True
-                            _safe_ui_put(ui_queue, {"type": "status", "process": "audio", "status": "waiting"})
+                            _safe_ui_put(ui_queue, ui_status("audio", "waiting"))
                         continue
                     is_recording = True
                     recording_start_ts = cmd_ts or time.time()
@@ -380,40 +414,21 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                         "recording_stop": recording_stop_ts,
                     }
 
-                    # Clear any stale partials from the queue. multiprocessing
-                    # Queue.empty() is unreliable across processes, so drain
-                    # with get_nowait() until it raises.
-                    while True:
-                        try:
-                            asr_queue.get_nowait()
-                        except queue.Empty:
-                            break
+                    # Clear any stale partials from the queue.
+                    _drain_queue(asr_queue)
 
                     if frames:
                         audio_array = _process_audio_frames(frames, actual_rate)
-                        final_msg = (audio_array, RATE, True, timing)
-                        try:
-                            if final_queue is not None:
-                                final_queue.put(final_msg, block=True, timeout=2.0)
-                            else:
-                                asr_queue.put(final_msg, block=True, timeout=2.0)
-                            logger.info(
-                                f"[AUDIO] Final pushed to "
-                                f"{'final queue' if final_queue is not None else 'ASR queue'}: "
-                                f"{len(frames)} frames ({len(audio_array)} samples, {recording_duration:.2f}s)"
-                            )
-                        except queue.Full:
-                            logger.error("queue full, dropped final audio chunk")
+                        _push_final(
+                            asr_queue, final_queue, audio_array, timing,
+                            note=f": {len(frames)} frames ({len(audio_array)} samples, {recording_duration:.2f}s)",
+                        )
                     else:
-                        empty_msg = (np.array([], dtype=np.float32), RATE, True, timing)
-                        try:
-                            if final_queue is not None:
-                                final_queue.put(empty_msg, block=True, timeout=2.0)
-                            else:
-                                asr_queue.put(empty_msg, block=True, timeout=2.0)
-                            logger.info(f"[AUDIO] Final (empty) pushed to {'final queue' if final_queue is not None else 'ASR queue'}")
-                        except queue.Full:
-                            logger.error("final queue full, dropped final empty chunk")
+                        empty_array = np.array([], dtype=np.float32)
+                        _push_final(
+                            asr_queue, final_queue, empty_array, timing,
+                            note=" (empty)",
+                        )
 
                     frames = []
                     frames_since_last_partial = 0
@@ -427,7 +442,7 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                         logger.info(f"Switching audio device to index {new_device_index}...")
                         _close_stream(stream)
                         stream = None
-                        device_index = new_device_index
+                        current_device_index = new_device_index
                         # Retry immediately on the new device (no interval wait).
                         last_retry = None
                         waiting_reported = False
@@ -447,10 +462,10 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                     if _try_open_stream():
                         logger.info("[AUDIO] Microphone detected; audio stream opened.")
                         waiting_reported = False
-                        _safe_ui_put(ui_queue, {"type": "status", "process": "audio", "status": "ready"})
+                        _safe_ui_put(ui_queue, ui_status("audio", "ready"))
                     elif not waiting_reported:
                         waiting_reported = True
-                        _safe_ui_put(ui_queue, {"type": "status", "process": "audio", "status": "waiting"})
+                        _safe_ui_put(ui_queue, ui_status("audio", "waiting"))
                 else:
                     time.sleep(0.05)
                 continue
@@ -484,11 +499,7 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                             f"[AUDIO] Recording truncated at {MAX_RECORDING_MINUTES} min; "
                             f"audio beyond {MAX_RECORDING_MINUTES} min is being discarded."
                         )
-                        _safe_ui_put(ui_queue, {
-                            "type": "truncated",
-                            "dropped_seconds": dropped_seconds,
-                            "max_minutes": MAX_RECORDING_MINUTES,
-                        })
+                        _safe_ui_put(ui_queue, ui_truncated(dropped_seconds, MAX_RECORDING_MINUTES))
 
                 # Emit a partial transcript periodically
                 if frames_since_last_partial >= partial_threshold and len(frames) > partial_start_index:
@@ -516,7 +527,7 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
 
     except Exception as e:
         logger.error(f"Audio capture terminated: {e}")
-        _safe_ui_put(ui_queue, {"type": "error", "message": f"Audio error: {e}"}, block=True, timeout=5.0)
+        _safe_ui_put(ui_queue, ui_error(f"Audio error: {e}"), block=True, timeout=5.0)
     finally:
         _close_stream(stream)
         if p is not None:

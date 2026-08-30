@@ -14,6 +14,17 @@ from PyQt6.QtWidgets import (
     QComboBox, QListView
 )
 from src.audio import list_audio_devices
+from src.events import (
+    TYPE_CANCEL,
+    TYPE_ERROR,
+    TYPE_FINAL,
+    TYPE_PARTIAL,
+    TYPE_PROVISIONAL,
+    TYPE_SKIPPED,
+    TYPE_STATUS,
+    TYPE_TRANSLATION,
+    TYPE_TRUNCATED,
+)
 
 # Constants
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".config")
@@ -89,6 +100,7 @@ class MainWindow(QMainWindow):
         self.audio_ready = False
         self._audio_waiting = False
         self.is_recording = False
+        self._event_handlers = self._build_event_handlers()
         self._drag_pos = QPoint()
         self._audio_devices = []
         self._workers_dead = False
@@ -546,174 +558,203 @@ class MainWindow(QMainWindow):
                     self.close()
                     return
                 if isinstance(item, dict):
-                    msg_type = item.get("type")
-                    if msg_type == "status":
-                        process = item.get("process")
-                        status = item.get("status")
-                        if process == "audio" and status == "waiting":
-                            self.audio_ready = False
-                            self._audio_waiting = True
-                            if self.is_recording:
-                                # Device dropped mid-recording: the worker can no
-                                # longer capture, so release the UI recording state
-                                # instead of leaving a dead "Stop Recording" button.
-                                self.is_recording = False
-                                self.action_btn.setProperty("state", "idle")
-                                self.action_btn.style().unpolish(self.action_btn)
-                                self.action_btn.style().polish(self.action_btn)
-                                self.action_btn.setText("Start Recording")
-                            # Invalidate the cached device list so the poll timer
-                            # re-enumerates (a different mic may be connected now).
-                            self._audio_devices = []
-                            self.device_combo.clear()
-                            self.device_combo.setEnabled(False)
-                            self.update_system_readiness()
-                            self._maybe_show_audio_waiting()
-                        elif process == "audio" and status == "ready":
-                            self.audio_ready = True
-                            was_waiting = self._audio_waiting
-                            self._audio_waiting = False
-                            if was_waiting:
-                                # Clear the "Waiting for microphone..." banner now
-                                # that a stream is confirmed.
-                                self.current_label.hide()
-                                self.current_label.setText("")
-                            if not self._audio_devices:
-                                # The worker opened a stream, so devices exist;
-                                # populate the combo if our earlier probe saw none.
-                                self._refresh_devices()
-                            self.update_system_readiness()
-                        elif process == "transcriber" and status == "ready":
-                            self.transcriber_ready = True
-                            self.update_system_readiness()
-                        elif process == "translator" and status == "ready":
-                            self.translator_ready = True
-                            self.update_system_readiness()
-                        elif process == "translator" and status == "ollama_waiting":
-                            self.sys_status_label.setText("Starting Ollama...")
-                            self.sys_status_label.setStyleSheet(f"color: {COLOR_WARNING}; font-size: 14px; font-weight: 500;")
-                        elif process == "translator" and status == "ollama_offline":
-                            self.sys_status_label.setText("Ollama offline")
-                            self.sys_status_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 14px; font-weight: 500;")
-                            self.current_label.show()
-                            self.current_label.setText(
-                                "<b>Ollama is not running.</b> Start Ollama (or install it from "
-                                "https://ollama.com/download) — the app will recover automatically."
-                            )
-                            self.current_label.setStyleSheet(
-                                f"color: {COLOR_ERROR}; font-size: 15px; padding: 16px; "
-                                f"background-color: #450A0A; border: 1px solid #7F1D1D; border-radius: 8px;"
-                            )
-                        elif process == "translator" and status == "model_download":
-                            model = item.get("model", "the translation model")
-                            self.sys_status_label.setText(f"Downloading {model}...")
-                            self.sys_status_label.setStyleSheet(f"color: {COLOR_WARNING}; font-size: 14px; font-weight: 500;")
-                    elif msg_type == "partial":
-                        text = item.get("text", "")
-                        if text:
-                            self.current_label.show()
-                            self.current_label.setText(text)
-                            self.current_label.setStyleSheet("color: #CBD5E1; font-size: 18px; padding: 16px; background-color: #1E293B; border: 1px solid #334155; border-radius: 8px;")
-                            logger.debug(f"[UI] Partial transcript: '{text}'")
-                    elif msg_type == "final":
-                        text = item.get("text", "")
-                        if text:
-                            self.current_label.show()
-                            self.current_label.setText(f"<i>{text}</i>")
-                            self.current_label.setStyleSheet("color: #94A3B8; font-style: italic; font-size: 18px; padding: 16px; background-color: #1E293B; border: 1px solid #334155; border-radius: 8px;")
-                            logger.info(f"[UI] Final transcript ({len(text)} chars): '{text}'")
-                    elif msg_type == "provisional":
-                        # Live translation preview while recording continues.
-                        # Not added to history/log and never resets UI state —
-                        # the authoritative 'translation' event replaces it.
-                        original = item.get("original", "")
-                        translated = item.get("translated", "")
-                        if translated:
-                            self.current_label.show()
-                            self.current_label.setText(f"{original}\n→ {translated}")
-                            self.current_label.setStyleSheet("color: #D1FAE5; font-size: 18px; padding: 16px; background-color: #064E3B; border: 1px solid #047857; border-radius: 8px;")
-                            logger.debug(f"[UI] Provisional translation: '{translated}'")
-                    elif msg_type == "translation":
-                        ui_display_time = time.time()
-                        original = item.get("original", "")
-                        translated = item.get("translated", "")
-                        latency = item.get("latency", 0.0)
-                        timing = item.get("timing", {})
-
-                        # Log full pipeline timing if available
-                        if timing.get("recording_start") and timing.get("recording_stop"):
-                            rec_dur, trans_dur, tl_dur, total = _pipeline_timing_values(timing, ui_display_time)
-                            status_tag = "[OK]" if total <= 2.0 else "[SLOW]"
-                            logger.info(
-                                f"[PIPELINE] Recording: {rec_dur:.2f}s | "
-                                f"Transcription: {trans_dur:.3f}s | "
-                                f"Translation: {tl_dur:.3f}s | "
-                                f"TOTAL (stop->display): {total:.3f}s {status_tag}"
-                            )
-
-                        self._add_to_history(original, translated, latency)
-                        self._log_message(original, translated, timing)
-                        logger.info(f"[UI] Translation displayed ({len(translated)} chars): '{translated}'")
-                        self._reset_ui_state()
-                    elif msg_type == "cancel":
-                        reason = item.get("reason", "unknown")
-                        logger.info(f"[UI] Recording cancelled (reason={reason}).")
-                        if reason == "no_speech":
-                            # Genuine silence (VAD removed everything) — give the
-                            # user actionable feedback instead of a silent reset.
-                            self.current_label.show()
-                            self.current_label.setText(
-                                "<b>No speech detected.</b> Check that audio is "
-                                "reaching the selected device (e.g. Stereo Mix / "
-                                "virtual cable) and that something is playing."
-                            )
-                            self.current_label.setStyleSheet(f"color: {COLOR_WARNING}; font-size: 15px; padding: 16px; background-color: #451A03; border: 1px solid #92400E; border-radius: 8px;")
-                        elif reason == "empty_audio":
-                            self.current_label.show()
-                            self.current_label.setText(
-                                "<b>Empty recording.</b> No audio was captured — "
-                                "check the microphone or virtual device."
-                            )
-                            self.current_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 15px; padding: 16px; background-color: #450A0A; border: 1px solid #7F1D1D; border-radius: 8px;")
-                        self._reset_ui_state()
-                    elif msg_type == "skipped":
-                        reason = item.get("reason", "unknown")
-                        logger.info(f"[UI] Translation skipped (reason={reason}).")
-                        # Never reset the UI mid-recording: a late skip from a
-                        # previous utterance must not flip the button while the
-                        # user is already capturing the next one.
-                        if not self.is_recording:
-                            self._reset_ui_state()
-                    elif msg_type == "truncated":
-                        dropped = item.get("dropped_seconds", 0)
-                        max_min = item.get("max_minutes", MAX_RECORDING_MINUTES_DEFAULT)
-                        logger.warning(f"[UI] Audio truncated at {max_min} min — dropped {dropped}s.")
-                        self.current_label.show()
-                        detail = (
-                            f" oldest {dropped:.1f}s dropped."
-                            if dropped > 0
-                            else " audio beyond this point is being discarded."
-                        )
-                        self.current_label.setText(
-                            f"<b>Warning:</b> recording truncated at {max_min} min —{detail}"
-                        )
-                        self.current_label.setStyleSheet(f"color: {COLOR_WARNING}; font-size: 15px; padding: 16px; background-color: #451A03; border: 1px solid #92400E; border-radius: 8px;")
-                    elif msg_type == "error":
-                        err_msg = item.get("message", "Unknown error")
-                        logger.error(f"[UI] Pipeline error received: {err_msg}")
-                        self.current_label.show()
-                        self.current_label.setText(f"<b>{err_msg}</b>")
-                        self.current_label.setStyleSheet("color: #F87171; font-size: 16px; padding: 16px; background-color: #450A0A; border: 1px solid #7F1D1D; border-radius: 8px;")
-                        self.sys_status_label.setText("System Error")
-                        self.sys_status_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 14px; font-weight: 500;")
-                        self._reset_ui_state(is_error=True)
-                        self.is_recording = False
-                        try:
-                            self.control_queue.put("FINISH", block=False)
-                        except Exception as e:
-                            logger.warning(f"Error sending FINISH to control_queue: {e}")
+                    handler = self._event_handlers.get(item.get("type"))
+                    if handler is not None:
+                        handler(item)
         except queue.Empty:
             pass
+
+    def _build_event_handlers(self) -> dict:
+        """Maps event types to their UI handlers (single dispatch point)."""
+        return {
+            TYPE_STATUS: self._handle_status,
+            TYPE_PARTIAL: self._handle_partial,
+            TYPE_FINAL: self._handle_final,
+            TYPE_PROVISIONAL: self._handle_provisional,
+            TYPE_TRANSLATION: self._handle_translation,
+            TYPE_CANCEL: self._handle_cancel,
+            TYPE_SKIPPED: self._handle_skipped,
+            TYPE_TRUNCATED: self._handle_truncated,
+            TYPE_ERROR: self._handle_error,
+        }
+
+    def _handle_status(self, item):
+        process = item.get("process")
+        status = item.get("status")
+        if process == "audio" and status == "waiting":
+            self.audio_ready = False
+            self._audio_waiting = True
+            if self.is_recording:
+                # Device dropped mid-recording: the worker can no
+                # longer capture, so release the UI recording state
+                # instead of leaving a dead "Stop Recording" button.
+                self.is_recording = False
+                self.action_btn.setProperty("state", "idle")
+                self.action_btn.style().unpolish(self.action_btn)
+                self.action_btn.style().polish(self.action_btn)
+                self.action_btn.setText("Start Recording")
+            # Invalidate the cached device list so the poll timer
+            # re-enumerates (a different mic may be connected now).
+            self._audio_devices = []
+            self.device_combo.clear()
+            self.device_combo.setEnabled(False)
+            self.update_system_readiness()
+            self._maybe_show_audio_waiting()
+        elif process == "audio" and status == "ready":
+            self.audio_ready = True
+            was_waiting = self._audio_waiting
+            self._audio_waiting = False
+            if was_waiting:
+                # Clear the "Waiting for microphone..." banner now
+                # that a stream is confirmed.
+                self.current_label.hide()
+                self.current_label.setText("")
+            if not self._audio_devices:
+                # The worker opened a stream, so devices exist;
+                # populate the combo if our earlier probe saw none.
+                self._refresh_devices()
+            self.update_system_readiness()
+        elif process == "transcriber" and status == "ready":
+            self.transcriber_ready = True
+            self.update_system_readiness()
+        elif process == "translator" and status == "ready":
+            self.translator_ready = True
+            self.update_system_readiness()
+        elif process == "translator" and status == "ollama_waiting":
+            self.sys_status_label.setText("Starting Ollama...")
+            self.sys_status_label.setStyleSheet(f"color: {COLOR_WARNING}; font-size: 14px; font-weight: 500;")
+        elif process == "translator" and status == "ollama_offline":
+            self.sys_status_label.setText("Ollama offline")
+            self.sys_status_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 14px; font-weight: 500;")
+            self.current_label.show()
+            self.current_label.setText(
+                "<b>Ollama is not running.</b> Start Ollama (or install it from "
+                "https://ollama.com/download) — the app will recover automatically."
+            )
+            self.current_label.setStyleSheet(
+                f"color: {COLOR_ERROR}; font-size: 15px; padding: 16px; "
+                f"background-color: #450A0A; border: 1px solid #7F1D1D; border-radius: 8px;"
+            )
+        elif process == "translator" and status == "model_download":
+            model = item.get("model", "the translation model")
+            self.sys_status_label.setText(f"Downloading {model}...")
+            self.sys_status_label.setStyleSheet(f"color: {COLOR_WARNING}; font-size: 14px; font-weight: 500;")
+
+    def _handle_partial(self, item):
+        text = item.get("text", "")
+        if text:
+            self.current_label.show()
+            self.current_label.setText(text)
+            self.current_label.setStyleSheet("color: #CBD5E1; font-size: 18px; padding: 16px; background-color: #1E293B; border: 1px solid #334155; border-radius: 8px;")
+            logger.debug(f"[UI] Partial transcript: '{text}'")
+
+    def _handle_final(self, item):
+        text = item.get("text", "")
+        if text:
+            self.current_label.show()
+            self.current_label.setText(f"<i>{text}</i>")
+            self.current_label.setStyleSheet("color: #94A3B8; font-style: italic; font-size: 18px; padding: 16px; background-color: #1E293B; border: 1px solid #334155; border-radius: 8px;")
+            logger.info(f"[UI] Final transcript ({len(text)} chars): '{text}'")
+
+    def _handle_provisional(self, item):
+        # Live translation preview while recording continues.
+        # Not added to history/log and never resets UI state —
+        # the authoritative 'translation' event replaces it.
+        # Guard: discard late provisionals that arrive after
+        # the UI has been reset (B3 fix).
+        if not self.is_recording:
+            return
+        original = item.get("original", "")
+        translated = item.get("translated", "")
+        if translated:
+            self.current_label.show()
+            self.current_label.setText(f"{original}\n→ {translated}")
+            self.current_label.setStyleSheet("color: #D1FAE5; font-size: 18px; padding: 16px; background-color: #064E3B; border: 1px solid #047857; border-radius: 8px;")
+            logger.debug(f"[UI] Provisional translation: '{translated}'")
+
+    def _handle_translation(self, item):
+        ui_display_time = time.time()
+        original = item.get("original", "")
+        translated = item.get("translated", "")
+        latency = item.get("latency", 0.0)
+        timing = item.get("timing", {})
+
+        # Log full pipeline timing if available
+        if timing.get("recording_start") and timing.get("recording_stop"):
+            rec_dur, trans_dur, tl_dur, total = _pipeline_timing_values(timing, ui_display_time)
+            status_tag = "[OK]" if total <= 2.0 else "[SLOW]"
+            logger.info(
+                f"[PIPELINE] Recording: {rec_dur:.2f}s | "
+                f"Transcription: {trans_dur:.3f}s | "
+                f"Translation: {tl_dur:.3f}s | "
+                f"TOTAL (stop->display): {total:.3f}s {status_tag}"
+            )
+
+        self._add_to_history(original, translated, latency)
+        self._log_message(original, translated, timing)
+        logger.info(f"[UI] Translation displayed ({len(translated)} chars): '{translated}'")
+        self._reset_ui_state()
+
+    def _handle_cancel(self, item):
+        reason = item.get("reason", "unknown")
+        logger.info(f"[UI] Recording cancelled (reason={reason}).")
+        if reason == "no_speech":
+            # Genuine silence (VAD removed everything) — give the
+            # user actionable feedback instead of a silent reset.
+            self.current_label.show()
+            self.current_label.setText(
+                "<b>No speech detected.</b> Check that audio is "
+                "reaching the selected device (e.g. Stereo Mix / "
+                "virtual cable) and that something is playing."
+            )
+            self.current_label.setStyleSheet(f"color: {COLOR_WARNING}; font-size: 15px; padding: 16px; background-color: #451A03; border: 1px solid #92400E; border-radius: 8px;")
+        elif reason == "empty_audio":
+            self.current_label.show()
+            self.current_label.setText(
+                "<b>Empty recording.</b> No audio was captured — "
+                "check the microphone or virtual device."
+            )
+            self.current_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 15px; padding: 16px; background-color: #450A0A; border: 1px solid #7F1D1D; border-radius: 8px;")
+        self._reset_ui_state()
+
+    def _handle_skipped(self, item):
+        reason = item.get("reason", "unknown")
+        logger.info(f"[UI] Translation skipped (reason={reason}).")
+        # Never reset the UI mid-recording: a late skip from a
+        # previous utterance must not flip the button while the
+        # user is already capturing the next one.
+        if not self.is_recording:
+            self._reset_ui_state()
+
+    def _handle_truncated(self, item):
+        dropped = item.get("dropped_seconds", 0)
+        max_min = item.get("max_minutes", MAX_RECORDING_MINUTES_DEFAULT)
+        logger.warning(f"[UI] Audio truncated at {max_min} min — dropped {dropped}s.")
+        self.current_label.show()
+        detail = (
+            f" oldest {dropped:.1f}s dropped."
+            if dropped > 0
+            else " audio beyond this point is being discarded."
+        )
+        self.current_label.setText(
+            f"<b>Warning:</b> recording truncated at {max_min} min —{detail}"
+        )
+        self.current_label.setStyleSheet(f"color: {COLOR_WARNING}; font-size: 15px; padding: 16px; background-color: #451A03; border: 1px solid #92400E; border-radius: 8px;")
+
+    def _handle_error(self, item):
+        err_msg = item.get("message", "Unknown error")
+        logger.error(f"[UI] Pipeline error received: {err_msg}")
+        self.current_label.show()
+        self.current_label.setText(f"<b>{err_msg}</b>")
+        self.current_label.setStyleSheet("color: #F87171; font-size: 16px; padding: 16px; background-color: #450A0A; border: 1px solid #7F1D1D; border-radius: 8px;")
+        self.sys_status_label.setText("System Error")
+        self.sys_status_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 14px; font-weight: 500;")
+        self._reset_ui_state(is_error=True)
+        self.is_recording = False
+        try:
+            self.control_queue.put("FINISH", block=False)
+        except Exception as e:
+            logger.warning(f"Error sending FINISH to control_queue: {e}")
 
     def closeEvent(self, event):
         # Signal the watchdog to stand down — processes are being stopped

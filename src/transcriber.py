@@ -7,6 +7,14 @@ import time
 import logging
 from faster_whisper import WhisperModel
 
+from src.events import (
+    ui_cancel,
+    ui_error,
+    ui_final,
+    ui_partial,
+    ui_skipped,
+    ui_status,
+)
 from src.queueutil import put_best_effort
 
 logger = logging.getLogger(__name__)
@@ -206,7 +214,7 @@ def start_transcriber(
     """
     model = _create_model()
 
-    _send_to_queue(ui_queue, {"type": "status", "process": "transcriber", "status": "ready"})
+    _send_to_queue(ui_queue, ui_status("transcriber", "ready"))
 
     detected_language = None
     # Language remembered across chunks and recordings. When a final chunk's
@@ -267,7 +275,7 @@ def start_transcriber(
             if audio_data is None or len(audio_data) == 0:
                 if is_final:
                     detected_language = last_confident_language
-                    _send_to_queue(ui_queue, {"type": "cancel", "reason": "empty_audio"})
+                    _send_to_queue(ui_queue, ui_cancel("empty_audio"))
                     logger.warning("[TRANSCRIBER] Final chunk was empty — sent cancel")
                 continue
 
@@ -348,7 +356,7 @@ def start_transcriber(
             if not text:
                 if is_final:
                     detected_language = last_confident_language
-                    _send_to_queue(ui_queue, {"type": "cancel", "reason": "no_speech"})
+                    _send_to_queue(ui_queue, ui_cancel("no_speech"))
                     logger.warning("[TRANSCRIBER] No speech detected in final chunk — sent cancel")
                 continue
 
@@ -357,7 +365,7 @@ def start_transcriber(
                 # Accumulate the growing transcript (each partial covers the
                 # audio slice since the previous one).
                 provisional_text = (provisional_text + " " + text).strip()
-                _send_to_queue(ui_queue, {"type": "partial", "text": provisional_text})
+                _send_to_queue(ui_queue, ui_partial(provisional_text))
                 # Progressive translation: forward the accumulated text as a
                 # provisional task so the LLM translates while the user is
                 # still speaking. Throttled by text growth to limit LLM load.
@@ -382,13 +390,13 @@ def start_transcriber(
                 # Terminal event contract: every final path emits at least one
                 # terminal UI event. If a final cannot be delivered, emit a
                 # 'skipped' event so the UI never locks in a pending state.
-                final_sent = _send_to_queue(ui_queue, {"type": "final", "text": text}, block=True, timeout=TIMEOUT_PUT, error_msg="ui_queue full, dropped final transcription")
+                final_sent = _send_to_queue(ui_queue, ui_final(text), block=True, timeout=TIMEOUT_PUT, error_msg="ui_queue full, dropped final transcription")
                 if not final_sent:
-                    _send_to_queue(ui_queue, {"type": "skipped", "reason": "queue_full", "stage": "ui"}, block=False)
+                    _send_to_queue(ui_queue, ui_skipped("queue_full", stage="ui"), block=False)
 
                 translation_sent = _send_to_queue(translation_queue, (text, detected_language, timing), block=True, timeout=TIMEOUT_PUT, error_msg="translation_queue full, dropped text")
                 if not translation_sent:
-                    _send_to_queue(ui_queue, {"type": "skipped", "reason": "queue_full", "stage": "translation"}, block=True, timeout=TIMEOUT_PUT)
+                    _send_to_queue(ui_queue, ui_skipped("queue_full", stage="translation"), block=True, timeout=TIMEOUT_PUT)
                 else:
                     logger.info(f"[TRANSCRIBER] Final queued for translation (lang={detected_language}, {len(text)} chars)")
 
@@ -401,4 +409,4 @@ def start_transcriber(
             continue
         except Exception as e:
             logger.error(f"Transcriber error: {e}. Item: {item!r}")
-            _send_to_queue(ui_queue, {"type": "error", "message": f"Transcription Error: {e}"}, block=True, timeout=TIMEOUT_PUT)
+            _send_to_queue(ui_queue, ui_error(f"Transcription Error: {e}"), block=True, timeout=TIMEOUT_PUT)

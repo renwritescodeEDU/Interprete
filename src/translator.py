@@ -10,6 +10,7 @@ import threading
 import concurrent.futures
 import ollama
 
+from src.events import ui_error, ui_provisional, ui_skipped, ui_status, ui_translation
 from src.glossary import get_glossary_manager
 from src.queueutil import put_best_effort
 
@@ -133,12 +134,12 @@ def _ensure_ollama_running(ui_queue, timeout: float = OLLAMA_START_TIMEOUT) -> b
     if not _ollama_start_attempted:
         _ollama_start_attempted = True
         logger.warning("Ollama is not running. Attempting to start it...")
-        _put_ui(ui_queue, {"type": "status", "process": "translator", "status": "ollama_waiting"})
+        _put_ui(ui_queue, ui_status("translator", "ollama_waiting"))
         if not _start_ollama():
-            _put_ui(ui_queue, {"type": "status", "process": "translator", "status": "ollama_offline"})
+            _put_ui(ui_queue, ui_status("translator", "ollama_offline"))
             return False
     else:
-        _put_ui(ui_queue, {"type": "status", "process": "translator", "status": "ollama_waiting"})
+        _put_ui(ui_queue, ui_status("translator", "ollama_waiting"))
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -147,7 +148,7 @@ def _ensure_ollama_running(ui_queue, timeout: float = OLLAMA_START_TIMEOUT) -> b
             return True
         time.sleep(2.0)
 
-    _put_ui(ui_queue, {"type": "status", "process": "translator", "status": "ollama_offline"})
+    _put_ui(ui_queue, ui_status("translator", "ollama_offline"))
     logger.error("Ollama did not become ready within the timeout.")
     return False
 
@@ -161,7 +162,7 @@ def _warmup_ollama(ui_queue) -> bool:
     except ollama.ResponseError as e:
         if e.status_code == 404:
             logger.info(f"Model {LLM_MODEL} not found. Downloading (this may take a while)...")
-            _put_ui(ui_queue, {"type": "status", "process": "translator", "status": "model_download", "model": LLM_MODEL})
+            _put_ui(ui_queue, ui_status("translator", "model_download", model=LLM_MODEL))
             ollama.pull(LLM_MODEL)
             logger.info(f"Model {LLM_MODEL} downloaded successfully.")
         else:
@@ -647,7 +648,7 @@ def _handle_partial(text: str, lang: str, source_lang: str, target_lang: str,
         if not result or _detect_same_language(result, source_lang):
             return
         result = _postprocess_translation(text, result, target_lang)
-        _put_ui(ui_queue, {"type": "provisional", "original": text, "translated": result}, timeout=2.0)
+        _put_ui(ui_queue, ui_provisional(text, result), timeout=2.0)
     except Exception as e:
         logger.debug(f"[TRANSLATOR] Provisional translation failed (dropped): {e}")
 
@@ -688,7 +689,7 @@ def process_translation_task(task: tuple, context_history: list,
         # Guard: if the text is already in the target language, skip translation
         if _detect_same_language(text, target_lang):
             logger.info(f"[TRANSLATOR] Skipping re-translation — text already in {target_lang}: '{text}'")
-            _put_ui(ui_queue, {"type": "skipped", "reason": "same_language", "original": text})
+            _put_ui(ui_queue, ui_skipped("same_language", original=text))
             return
 
         timing["translation_start"] = time.time()
@@ -702,7 +703,7 @@ def process_translation_task(task: tuple, context_history: list,
 
         if ollama_translation is None:
             logger.error("[TRANSLATOR] Translation failed — no result from Ollama.")
-            _put_ui(ui_queue, {"type": "error", "message": "Translation failed. Check that Ollama is running."})
+            _put_ui(ui_queue, ui_error("Translation failed. Check that Ollama is running."))
             return
 
         # Honorific restoration: 3B models drop leading vocatives ("Ma'am,").
@@ -718,7 +719,7 @@ def process_translation_task(task: tuple, context_history: list,
                 f"[TRANSLATOR] Rejected output still in source language ({source_lang}). "
                 f"Full output: '{ollama_translation}'"
             )
-            _put_ui(ui_queue, {"type": "error", "message": f"Translation output was not in {target_lang}."})
+            _put_ui(ui_queue, ui_error(f"Translation output was not in {target_lang}."))
             return
 
         # Deterministic post-processing: orthography, proper names, trailing
@@ -736,16 +737,10 @@ def process_translation_task(task: tuple, context_history: list,
                 if len(shared_context) > 10:
                     shared_context.pop(0)
 
-        _put_ui(ui_queue, {
-            "type": "translation",
-            "original": text,
-            "translated": ollama_translation,
-            "latency": ollama_time,
-            "timing": timing
-        })
+        _put_ui(ui_queue, ui_translation(text, ollama_translation, ollama_time, timing))
     except Exception as e:
         logger.error(f"[TRANSLATOR] Unhandled error in translation task (lang={lang}, text='{text[:200]}'): {e}")
-        _put_ui(ui_queue, {"type": "error", "message": f"Translation Error: {e}"})
+        _put_ui(ui_queue, ui_error(f"Translation Error: {e}"))
 
 
 def start_translator(translation_queue: multiprocessing.Queue, ui_queue: multiprocessing.Queue):
@@ -771,7 +766,7 @@ def start_translator(translation_queue: multiprocessing.Queue, ui_queue: multipr
                 except Exception as e:
                     logger.warning(f"Ollama warmup failed during retry: {e}")
                     continue
-                _put_ui(ui_queue, {"type": "status", "process": "translator", "status": "ready"})
+                _put_ui(ui_queue, ui_status("translator", "ready"))
                 logger.info("[TRANSLATOR] Ready (recovered after Ollama started).")
                 return
 
@@ -799,7 +794,7 @@ def start_translator(translation_queue: multiprocessing.Queue, ui_queue: multipr
     # stop->display to 14-32s on long recordings.
     provisional_sem = threading.Semaphore(2)
     if ollama_up:
-        ui_queue.put({"type": "status", "process": "translator", "status": "ready"})
+        ui_queue.put(ui_status("translator", "ready"))
 
     # We use a ThreadPoolExecutor to handle incoming requests concurrently without blocking the queue reader.
     # Provisional (partial) tasks run on a SEPARATE single-thread executor so
@@ -840,12 +835,19 @@ def start_translator(translation_queue: multiprocessing.Queue, ui_queue: multipr
                     # already in flight — otherwise the final's Ollama call
                     # would queue behind the provisional backlog.
                     if provisional_sem.acquire(blocking=False):
-                        partial_executor.submit(
-                            process_translation_task,
-                            (text, lang), context_snapshot, ui_queue, timing,
-                            glossary_mgr, "Agent or client speaking — use formal register (usted).",
-                            None, None, True, provisional_sem
-                        )
+                        try:
+                            partial_executor.submit(
+                                process_translation_task,
+                                (text, lang), context_snapshot, ui_queue, timing,
+                                glossary_mgr, "Agent or client speaking — use formal register (usted).",
+                                None, None, True, provisional_sem
+                            )
+                        except Exception:
+                            # Never leak a semaphore slot: if submission fails
+                            # (e.g. executor shutting down), hand the slot back
+                            # so a later provisional can still be accepted (C2 fix).
+                            provisional_sem.release()
+                            raise
                 else:
                     executor.submit(
                         process_translation_task,
@@ -859,4 +861,4 @@ def start_translator(translation_queue: multiprocessing.Queue, ui_queue: multipr
                 continue
             except Exception as e:
                 logger.error(f"Error in translator loop: {e}")
-                ui_queue.put({"type": "error", "message": f"Translation Error: {e}"})
+                ui_queue.put(ui_error(f"Translation Error: {e}"))
