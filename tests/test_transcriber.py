@@ -64,11 +64,11 @@ class TestTranscriber(unittest.TestCase):
         # Skip 'ready' message
         self.ui_queue.get_nowait()
         cancel_msg = self.ui_queue.get_nowait()
-        self.assertEqual(cancel_msg, {"type": "cancel"})
+        self.assertEqual(cancel_msg, {"type": "cancel", "reason": "empty_audio"})
 
     @patch("src.transcriber.WhisperModel")
-    def test_transcriber_unsupported_language(self, mock_whisper):
-        """Mock language='fr', verify cancel and no output in translation_queue."""
+    def test_transcriber_unsupported_language_falls_back(self, mock_whisper):
+        """Mock language='fr': system falls back to DEFAULT_LANGUAGE instead of cancelling."""
         mock_model = MagicMock()
         mock_whisper.return_value = mock_model
         
@@ -86,9 +86,41 @@ class TestTranscriber(unittest.TestCase):
         
         # Skip 'ready' message
         self.ui_queue.get_nowait()
-        cancel_msg = self.ui_queue.get_nowait()
-        self.assertEqual(cancel_msg, {"type": "cancel"})
-        self.assertTrue(self.translation_queue.empty())
+        # No cancel: the unsupported language falls back to 'en' and the
+        # transcript is forwarded for translation instead of being discarded.
+        final_msg = self.ui_queue.get_nowait()
+        self.assertEqual(final_msg["type"], "final")
+        msg = self.translation_queue.get_nowait()
+        text, lang, _ = msg
+        self.assertEqual(text, "Bonjour")
+        self.assertEqual(lang, "en")
+
+    @patch("src.transcriber.WhisperModel")
+    def test_transcriber_low_confidence_final_still_forwarded(self, mock_whisper):
+        """Final with low language probability is transcribed, not discarded."""
+        mock_model = MagicMock()
+        mock_whisper.return_value = mock_model
+        
+        mock_segment = MagicMock()
+        mock_segment.text = "Hello world"
+        mock_info = MagicMock()
+        mock_info.language = "en"
+        mock_info.language_probability = 0.40
+        mock_model.transcribe.return_value = ([mock_segment], mock_info)
+        
+        self.asr_queue.put((b"audio_data", 16000, True))
+        self.asr_queue.put("QUIT")
+        
+        start_transcriber(self.asr_queue, self.translation_queue, self.ui_queue)
+        
+        # Skip 'ready' message
+        self.ui_queue.get_nowait()
+        final_msg = self.ui_queue.get_nowait()
+        self.assertEqual(final_msg["type"], "final")
+        msg = self.translation_queue.get_nowait()
+        text, lang, _ = msg
+        self.assertEqual(text, "Hello world")
+        self.assertEqual(lang, "en")
 
     @patch("src.transcriber.WhisperModel")
     def test_transcriber_partial_transcript(self, mock_whisper):

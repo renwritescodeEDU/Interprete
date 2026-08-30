@@ -117,24 +117,66 @@ class TestAudioModule(unittest.TestCase):
         self.assertEqual(open_kwargs.get("input_device_index"), target_device_index)
 
     @patch('src.audio.pyaudio.PyAudio')
-    def test_audio_capture_reports_error_to_ui_queue(self, mock_pyaudio):
-        """Verify stream open failure is reported to ui_queue (no silent death)."""
+    def test_audio_capture_waits_when_no_device(self, mock_pyaudio):
+        """Verify no-device startup enters a 'waiting' state instead of dying."""
         mock_p = MagicMock()
         mock_pyaudio.return_value = mock_p
-        
+
         # Make p.open raise an exception both for target rate and fallback
         mock_p.open.side_effect = Exception("Mocked stream error")
         mock_p.get_default_input_device_info.return_value = {"defaultSampleRate": 44100}
-        
+
         asr_queue = queue.Queue()
         control_queue = queue.Queue()
         ui_queue = queue.Queue()
-        
+        control_queue.put("QUIT")
+
         start_audio_capture(asr_queue, control_queue, ui_queue=ui_queue)
-        
+
         msg = ui_queue.get_nowait()
-        self.assertEqual(msg["type"], "error")
-        self.assertIn("Mocked stream error", msg["message"])
+        self.assertEqual(msg["type"], "status")
+        self.assertEqual(msg["process"], "audio")
+        self.assertEqual(msg["status"], "waiting")
+        # The worker must not have died — it returned only because of QUIT.
+        self.assertTrue(ui_queue.empty())
+
+    @patch('src.audio.pyaudio.PyAudio')
+    def test_audio_capture_detects_device_later(self, mock_pyaudio):
+        """Worker in 'waiting' state must transition to 'ready' when a device appears."""
+        mock_p = MagicMock()
+        mock_pyaudio.return_value = mock_p
+        mock_stream = MagicMock()
+        # _open_stream tries twice per attempt: first open fails (no device),
+        # the retry succeeds once a device is plugged in.
+        mock_p.open.side_effect = [
+            Exception("no device"), Exception("no device"),   # initial attempt fails
+            Exception("no device"), mock_stream,              # retry succeeds
+        ]
+        mock_p.get_default_input_device_info.return_value = {"defaultSampleRate": 44100}
+
+        asr_queue = queue.Queue()
+        control_queue = queue.Queue()
+        ui_queue = queue.Queue()
+
+        import threading
+        worker = threading.Thread(
+            target=start_audio_capture,
+            args=(asr_queue, control_queue, ui_queue),
+            daemon=True,
+        )
+        with patch('src.audio.DEVICE_RETRY_INTERVAL', 0.0):
+            worker.start()
+            time.sleep(0.3)  # let the initial failure and the retry both run
+            control_queue.put("QUIT")
+            worker.join(timeout=5)
+
+        statuses = []
+        while not ui_queue.empty():
+            msg = ui_queue.get()
+            if msg.get("type") == "status" and msg.get("process") == "audio":
+                statuses.append(msg["status"])
+        self.assertIn("waiting", statuses, f"expected a waiting status, got {statuses}")
+        self.assertIn("ready", statuses, f"expected a ready status after retry, got {statuses}")
 
     @patch('src.audio.pyaudio.PyAudio')
     def test_audio_capture_reports_truncation(self, mock_pyaudio):

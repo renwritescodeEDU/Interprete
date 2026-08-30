@@ -34,6 +34,10 @@ MAX_RECORDING_MINUTES_DEFAULT = 5
 # Maximum number of translation bubbles kept in the history panel.
 # Prevents unbounded memory growth over long interpreting sessions.
 MAX_HISTORY = 100
+# How often the UI re-probes for audio devices while none is available.
+# Lets the app self-recover ("waiting for microphone") when a mic is plugged
+# in after launch — no restart required.
+DEVICE_POLL_INTERVAL_MS = 3000
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +71,8 @@ class MainWindow(QMainWindow):
         
         self.transcriber_ready = False
         self.translator_ready = False
+        self.audio_ready = False
+        self._audio_waiting = False
         self.is_recording = False
         self._drag_pos = QPoint()
         self._audio_devices = []
@@ -89,13 +95,24 @@ class MainWindow(QMainWindow):
         self.health_timer.timeout.connect(self.check_health)
         self.health_timer.start(3000)
 
+        # Device polling: while no microphone is available, periodically
+        # re-enumerate devices so a freshly connected mic is picked up
+        # automatically (and the audio worker is told to re-probe).
+        self.device_timer = QTimer(self)
+        self.device_timer.timeout.connect(self._poll_devices)
+        self.device_timer.start(DEVICE_POLL_INTERVAL_MS)
+
     def _setup_ui(self):
         self.setWindowTitle("Simultaneous Interpreter")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setFixedSize(650, 600)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
-        font_family = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
+        # Qt-native font resolution: "Segoe UI" on Windows, system font on
+        # macOS. Uses the resolved application font (not a bare QFont, whose
+        # unset point size triggers "QFont::setPointSize: Point size <= 0"
+        # warnings).
+        font_family = QApplication.font().family()
         self.container = QWidget()
         self.container.setObjectName("MainContainer")
         self.container.setStyleSheet(f"""
@@ -107,6 +124,12 @@ class MainWindow(QMainWindow):
             }}
         """)
         self.setCentralWidget(self.container)
+        
+        # Set a concrete application font with a valid size so the stylesheet
+        # `font-family` never triggers "QFont::setPointSize: Point size <= 0".
+        base_font = QApplication.font()
+        base_font.setPointSize(13)
+        QApplication.setFont(base_font)
         
         main_layout = QVBoxLayout(self.container)
         main_layout.setContentsMargins(20, 20, 20, 20)
@@ -231,7 +254,13 @@ class MainWindow(QMainWindow):
         if self.device_combo.currentIndex() >= 0 and self._audio_devices:
             current_device_index = self._audio_devices[self.device_combo.currentIndex()]["index"]
 
-        self._audio_devices = list_audio_devices()
+        # Only input-capable devices can be recording sources. Filtering here
+        # prevents the combo from landing on an output-only device when no
+        # microphone is present (a common Windows failure mode).
+        self._audio_devices = [
+            dev for dev in list_audio_devices()
+            if dev.get("type") in ("input", "both")
+        ]
         self.device_combo.clear()
         type_icons = {"input": "[IN]", "output": "[OUT]", "both": "[IN/OUT]"}
 
@@ -247,7 +276,54 @@ class MainWindow(QMainWindow):
 
         if self._audio_devices:
             self.device_combo.setCurrentIndex(selected_combo_index)
-        self.device_combo.blockSignals(False)
+            self.device_combo.setEnabled(True)
+            self.device_combo.blockSignals(False)
+            self._audio_waiting = False
+            self.update_system_readiness()
+        else:
+            # No input device available: keep the combo disabled and surface
+            # the recoverable "waiting for microphone" state.
+            self.device_combo.setEnabled(False)
+            self.device_combo.blockSignals(False)
+            self._audio_waiting = True
+            self.update_system_readiness()
+            self._maybe_show_audio_waiting()
+
+    def _poll_devices(self):
+        """Auto-recover when no microphone was present at launch.
+
+        Runs on a timer and is a no-op once an input device exists or while
+        recording, so it never interferes with a manual device selection.
+        Enumeration is throttled (at most once per DEVICE_POLL_INTERVAL_MS)
+        so a machine with many virtual devices (VoiceMeeter/VB-CABLE) is not
+        re-scanned on every tick — the audio worker already re-probes in its
+        own process.
+        """
+        if self.is_recording or self._audio_devices:
+            return
+        now = time.time()
+        if getattr(self, "_last_device_poll", 0) and (now - self._last_device_poll) < DEVICE_POLL_INTERVAL_MS / 1000:
+            return
+        self._last_device_poll = now
+        logger.info("[UI] No input device available — re-probing for a microphone...")
+        self._refresh_devices()
+        if self._audio_devices:
+            # A device appeared: point the audio worker at it immediately.
+            self._on_device_changed(self.device_combo.currentIndex())
+
+    def _maybe_show_audio_waiting(self):
+        """Banner shown while the pipeline waits for an input device."""
+        if not self._audio_waiting or self.is_recording:
+            return
+        self.current_label.show()
+        self.current_label.setText(
+            "<b>Waiting for microphone...</b> Connect a microphone (or a virtual "
+            "audio device) — it will be detected automatically."
+        )
+        self.current_label.setStyleSheet(
+            f"color: {COLOR_WARNING}; font-size: 15px; padding: 16px; "
+            f"background-color: #451A03; border: 1px solid #92400E; border-radius: 8px;"
+        )
 
     def _on_device_changed(self, combo_index):
         if combo_index < 0 or combo_index >= len(self._audio_devices):
@@ -291,9 +367,26 @@ class MainWindow(QMainWindow):
             x = geom.x() + (geom.width() - self.width()) // 2
             y = geom.y() + (geom.height() - self.height()) // 2
             self.move(x, y)
+        else:
+            # Fallback for headless / RDP environments where the screen
+            # geometry is unavailable.
+            self.move(0, 0)
 
     def update_system_readiness(self):
-        if self.transcriber_ready and self.translator_ready:
+        models_ready = self.transcriber_ready and self.translator_ready
+        if models_ready and not self.audio_ready:
+            # No stream confirmed by the audio worker yet. Distinguish the
+            # "no device at all" case from the brief "connecting" window after
+            # a device is detected.
+            if self._audio_devices:
+                self.sys_status_label.setText("Connecting to microphone...")
+            else:
+                self.sys_status_label.setText("Waiting for microphone...")
+            self.sys_status_label.setStyleSheet(f"color: {COLOR_WARNING}; font-size: 14px; font-weight: 500;")
+            if not self.is_recording:
+                self.action_btn.setEnabled(False)
+            return
+        if models_ready and self.audio_ready:
             self.sys_status_label.setText("System Ready")
             self.sys_status_label.setStyleSheet(f"color: {COLOR_SUCCESS}; font-size: 14px; font-weight: 500;")
             if not self.is_recording and self.action_btn.text() == "Loading Models...":
@@ -367,8 +460,7 @@ class MainWindow(QMainWindow):
             self.current_label.hide()
             self.current_label.setText("")
         if not is_error:
-            self.sys_status_label.setText("System Ready")
-            self.sys_status_label.setStyleSheet(f"color: {COLOR_SUCCESS}; font-size: 14px; font-weight: 500;")
+            self.update_system_readiness()
         self.action_btn.setProperty("state", "idle")
         self.action_btn.style().unpolish(self.action_btn)
         self.action_btn.style().polish(self.action_btn)
@@ -376,6 +468,13 @@ class MainWindow(QMainWindow):
         self.action_btn.setEnabled(True)
         self.device_combo.setEnabled(True)
         self.refresh_btn.setEnabled(True)
+        if self._audio_waiting and not is_error:
+            # Re-apply the waiting banner and keep the record button disabled;
+            # otherwise update_system_readiness() re-enables it above. On error
+            # paths the error banner in current_label must stay visible.
+            self.action_btn.setEnabled(False)
+            self.device_combo.setEnabled(False)
+            self._maybe_show_audio_waiting()
 
     def _add_to_history(self, original: str, translated: str, latency: float = 0.0):
         # Cap history to bound memory growth on long sessions
@@ -438,11 +537,66 @@ class MainWindow(QMainWindow):
                 if isinstance(item, dict):
                     msg_type = item.get("type")
                     if msg_type == "status":
-                        if item.get("process") == "transcriber" and item.get("status") == "ready":
+                        process = item.get("process")
+                        status = item.get("status")
+                        if process == "audio" and status == "waiting":
+                            self.audio_ready = False
+                            self._audio_waiting = True
+                            if self.is_recording:
+                                # Device dropped mid-recording: the worker can no
+                                # longer capture, so release the UI recording state
+                                # instead of leaving a dead "Stop Recording" button.
+                                self.is_recording = False
+                                self.action_btn.setProperty("state", "idle")
+                                self.action_btn.style().unpolish(self.action_btn)
+                                self.action_btn.style().polish(self.action_btn)
+                                self.action_btn.setText("Start Recording")
+                            # Invalidate the cached device list so the poll timer
+                            # re-enumerates (a different mic may be connected now).
+                            self._audio_devices = []
+                            self.device_combo.clear()
+                            self.device_combo.setEnabled(False)
+                            self.update_system_readiness()
+                            self._maybe_show_audio_waiting()
+                        elif process == "audio" and status == "ready":
+                            self.audio_ready = True
+                            was_waiting = self._audio_waiting
+                            self._audio_waiting = False
+                            if was_waiting:
+                                # Clear the "Waiting for microphone..." banner now
+                                # that a stream is confirmed.
+                                self.current_label.hide()
+                                self.current_label.setText("")
+                            if not self._audio_devices:
+                                # The worker opened a stream, so devices exist;
+                                # populate the combo if our earlier probe saw none.
+                                self._refresh_devices()
+                            self.update_system_readiness()
+                        elif process == "transcriber" and status == "ready":
                             self.transcriber_ready = True
-                        elif item.get("process") == "translator" and item.get("status") == "ready":
+                            self.update_system_readiness()
+                        elif process == "translator" and status == "ready":
                             self.translator_ready = True
-                        self.update_system_readiness()
+                            self.update_system_readiness()
+                        elif process == "translator" and status == "ollama_waiting":
+                            self.sys_status_label.setText("Starting Ollama...")
+                            self.sys_status_label.setStyleSheet(f"color: {COLOR_WARNING}; font-size: 14px; font-weight: 500;")
+                        elif process == "translator" and status == "ollama_offline":
+                            self.sys_status_label.setText("Ollama offline")
+                            self.sys_status_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 14px; font-weight: 500;")
+                            self.current_label.show()
+                            self.current_label.setText(
+                                "<b>Ollama is not running.</b> Start Ollama (or install it from "
+                                "https://ollama.com/download) — the app will recover automatically."
+                            )
+                            self.current_label.setStyleSheet(
+                                f"color: {COLOR_ERROR}; font-size: 15px; padding: 16px; "
+                                f"background-color: #450A0A; border: 1px solid #7F1D1D; border-radius: 8px;"
+                            )
+                        elif process == "translator" and status == "model_download":
+                            model = item.get("model", "the translation model")
+                            self.sys_status_label.setText(f"Downloading {model}...")
+                            self.sys_status_label.setStyleSheet(f"color: {COLOR_WARNING}; font-size: 14px; font-weight: 500;")
                     elif msg_type == "partial":
                         text = item.get("text", "")
                         if text:
@@ -494,6 +648,25 @@ class MainWindow(QMainWindow):
                         logger.info(f"[UI] Translation displayed ({len(translated)} chars): '{translated}'")
                         self._reset_ui_state()
                     elif msg_type == "cancel":
+                        reason = item.get("reason", "unknown")
+                        logger.info(f"[UI] Recording cancelled (reason={reason}).")
+                        if reason == "no_speech":
+                            # Genuine silence (VAD removed everything) — give the
+                            # user actionable feedback instead of a silent reset.
+                            self.current_label.show()
+                            self.current_label.setText(
+                                "<b>No speech detected.</b> Check that audio is "
+                                "reaching the selected device (e.g. Stereo Mix / "
+                                "virtual cable) and that something is playing."
+                            )
+                            self.current_label.setStyleSheet(f"color: {COLOR_WARNING}; font-size: 15px; padding: 16px; background-color: #451A03; border: 1px solid #92400E; border-radius: 8px;")
+                        elif reason == "empty_audio":
+                            self.current_label.show()
+                            self.current_label.setText(
+                                "<b>Empty recording.</b> No audio was captured — "
+                                "check the microphone or virtual device."
+                            )
+                            self.current_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 15px; padding: 16px; background-color: #450A0A; border: 1px solid #7F1D1D; border-radius: 8px;")
                         self._reset_ui_state()
                     elif msg_type == "skipped":
                         reason = item.get("reason", "unknown")

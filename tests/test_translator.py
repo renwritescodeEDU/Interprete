@@ -16,8 +16,14 @@ class TestTranslator(unittest.TestCase):
         self.mock_time = self.patcher_time.start()
         # Provide enough dummy time values for the tests
         self.mock_time.side_effect = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+        # start_translator now ensures Ollama is running before loading models;
+        # pretend the server is always up so tests never touch the network or
+        # spawn an `ollama serve` subprocess.
+        self.patcher_ready = patch('src.translator._ollama_ready', return_value=True)
+        self.mock_ollama_ready = self.patcher_ready.start()
 
     def tearDown(self):
+        self.patcher_ready.stop()
         self.patcher_time.stop()
 
     def test_translator_callable(self):

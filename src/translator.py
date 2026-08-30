@@ -4,6 +4,8 @@ import time
 import json
 import logging
 import re
+import subprocess
+import sys
 import threading
 import concurrent.futures
 import ollama
@@ -43,6 +45,113 @@ try:
     ollama._client = ollama.Client(timeout=OLLAMA_TIMEOUT)
 except Exception as e:
     logger.warning(f"Could not configure Ollama client timeout: {e}")
+
+# How long to wait for the Ollama server to answer after (re)starting it.
+OLLAMA_START_TIMEOUT = 60.0
+# Probe timeout for the liveness check (short — it runs in tight loops).
+OLLAMA_PROBE_TIMEOUT = 2.0
+# Interval between self-healing retries while Ollama is offline.
+OLLAMA_RETRY_INTERVAL = 5.0
+# Ensures `ollama serve` is spawned at most once per process lifetime, so the
+# self-healing watcher never stacks duplicate server processes.
+_ollama_start_attempted = False
+
+
+def _ollama_ready() -> bool:
+    """True when the Ollama server answers a lightweight request."""
+    try:
+        probe = ollama.Client(timeout=OLLAMA_PROBE_TIMEOUT)
+        probe.list()
+        return True
+    except Exception:
+        return False
+
+
+def _start_ollama() -> bool:
+    """Launch the Ollama server as a background subprocess (cross-platform).
+
+    Windows: `ollama serve` runs hidden (no console window); the Ollama
+    tray app, if installed, is left untouched — the `serve` command attaches
+    to the same server binary and port. macOS/Linux: same command, daemonized.
+    """
+    if sys.platform == "win32":
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    else:
+        creationflags = 0
+    try:
+        subprocess.Popen(
+            ["ollama", "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+        return True
+    except FileNotFoundError:
+        logger.error("Ollama executable not found on PATH. Install it from https://ollama.com/download")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to start Ollama: {e}")
+        return False
+
+
+def _ensure_ollama_running(ui_queue, timeout: float = OLLAMA_START_TIMEOUT) -> bool:
+    """Ensure the Ollama server is reachable, starting it if necessary.
+
+    Sends "ollama_waiting" to the UI while waiting and "ollama_offline" if the
+    server cannot be brought up within the timeout. Returns True when ready.
+    `ollama serve` is launched at most once per process lifetime.
+    """
+    global _ollama_start_attempted
+
+    if _ollama_ready():
+        return True
+
+    if not _ollama_start_attempted:
+        _ollama_start_attempted = True
+        logger.warning("Ollama is not running. Attempting to start it...")
+        _put_ui(ui_queue, {"type": "status", "process": "translator", "status": "ollama_waiting"})
+        if not _start_ollama():
+            _put_ui(ui_queue, {"type": "status", "process": "translator", "status": "ollama_offline"})
+            return False
+    else:
+        _put_ui(ui_queue, {"type": "status", "process": "translator", "status": "ollama_waiting"})
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _ollama_ready():
+            logger.info("Ollama server is ready.")
+            return True
+        time.sleep(2.0)
+
+    _put_ui(ui_queue, {"type": "status", "process": "translator", "status": "ollama_offline"})
+    logger.error("Ollama did not become ready within the timeout.")
+    return False
+
+
+def _warmup_ollama(ui_queue) -> bool:
+    """Ensure the model is present and pre-warm it. Returns True on success."""
+    logger.info(f"Checking if model {LLM_MODEL} is available locally...")
+    try:
+        ollama.show(LLM_MODEL)
+    except ollama.ResponseError as e:
+        if e.status_code == 404:
+            logger.info(f"Model {LLM_MODEL} not found. Downloading (this may take a while)...")
+            _put_ui(ui_queue, {"type": "status", "process": "translator", "status": "model_download", "model": LLM_MODEL})
+            ollama.pull(LLM_MODEL)
+            logger.info(f"Model {LLM_MODEL} downloaded successfully.")
+        else:
+            raise e
+
+    logger.info(f"Warming up Ollama with model {LLM_MODEL}...")
+    ollama.chat(
+        model=LLM_MODEL,
+        messages=[{'role': 'user', 'content': '{"test":"hi"}'}],
+        format='json',
+        options={'temperature': 0.0},
+        keep_alive=-1,
+    )
+    return True
 
 TRANSLATION_PROMPT_TEMPLATE = """\
 <task>Simultaneous interpreter for live professional calls. {source_lang} → {target_lang}.</task>
@@ -102,6 +211,32 @@ def _build_rules(target_lang: str) -> dict:
         "orthography_rule": 'ORTHOGRAPHY: Use standard English spelling. Contractions must use correct apostrophe placement (e.g. "ma\'am" not "maam" or "maám"; "don\'t" not "dont").',
             "pronoun_resolution_rule": 'PRONOUNS: Spanish "su" is ambiguous (his/her/your/their). Resolve it from the referent introduced in the same sentence. If the clause subject is "él" (he), "su" = "his"; if "ella" (she), "su" = "her". Example: "él me preguntó si sabía su nombre" → "he asked me if I knew his name", never "your name". CONSISTENCY: All occurrences of "su/sus" in the same sentence refer to the same person — keep the SAME English possessive (your/his/her) for all of them. Example: "además de su esposo, sus dos hijos y su suegra" → "in addition to your husband, your two children and your mother-in-law".',
     }
+
+
+def _safe_json_parse(raw):
+    """Parse model JSON output, tolerating malformed/truncated ``\\u`` escapes.
+
+    The 3B model occasionally emits long repetition loops of literal ``\\u``
+    escapes (observed: a 2939-char reply of ``\\u00a9 \\u00b7 \\u00b7 ...``)
+    that end in a truncated escape (e.g. ``\\u`` with fewer than 4 hex digits),
+    which makes ``json.loads`` raise "Invalid \\uXXXX escape". Strategy:
+    1. try a plain parse; 2. strip any ``\\u`` not followed by 4 hex digits and
+    retry; 3. give up with ``None`` so the caller treats it as a failure.
+    """
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+
+    # A valid escape is \u + exactly 4 hex digits. Remove \u NOT followed by 4
+    # hex digits (truncated garbage from repetition loops).
+    cleaned = re.sub(r"\\u(?![0-9a-fA-F]{4})", "", raw)
+    try:
+        return json.loads(cleaned)
+    except Exception:
+        return None
 
 
 def _detect_same_language(text: str, target_lang: str) -> bool:
@@ -204,14 +339,26 @@ def translate_ollama(text: str, source_lang: str, target_lang: str,
             model=LLM_MODEL,
             messages=[{'role': 'user', 'content': prompt}],
             format='json',
-            options={'temperature': 0.0, 'num_predict': MAX_TRANSLATION_TOKENS}
+            options={
+                'temperature': 0.0,
+                'num_predict': MAX_TRANSLATION_TOKENS,
+                # Prevent repetition loops that produce thousands of
+                # copyright/bullet characters (observed: 2939-char response
+                # with literal \u00a9 \u00b7 \u00b7 ...).
+                'repeat_penalty': 1.2,
+            }
         )
         logger.info(f"[TRANSLATOR] LLM response received ({len(response['message']['content'])} chars)")
         # Parse JSON output. format='json' constrains the model to valid JSON,
         # but the shape is not guaranteed: require a dict with a non-empty
         # 'translation' key and plausible length. Anything else is a failure —
         # raw model output must never be surfaced as a translation.
-        res_json = json.loads(response['message']['content'])
+        raw = response['message']['content'].strip()
+        # Sanitise: remove any bare \u escapes that are not valid hex escapes
+        # (e.g. trailing \u at end of string or \uXXXX where XXXX has errors).
+        # The model occasionally emits literal \u sequences instead of Unicode
+        # characters, which breaks json.loads but is correctable.
+        res_json = _safe_json_parse(raw)
         if not isinstance(res_json, dict) or not res_json.get('translation'):
             raise ValueError("Model output missing a valid 'translation' key")
 
@@ -291,6 +438,10 @@ _ORTHOGRAPHY_FIXES = {
     "aúnque": "aunque",
     "despues": "después",
     "tambien": "también",
+    "ñ cual": "qué",
+    "ñntera": "entera",
+    "inglás": "inglés",
+    "estón": "están",
 }
 _ORTHOGRAPHY_WORD_FIXES = {"tó": "tú"}
 
@@ -586,25 +737,36 @@ def start_translator(translation_queue: multiprocessing.Queue, ui_queue: multipr
     except Exception as e:
         logger.warning(f"Failed to load glossaries: {e}. Continuing without glossary support.")
 
-    # Pre-warm Ollama to load the model into memory
-    try:
-        # Check if model exists, download if it doesn't
-        logger.info(f"Checking if model {LLM_MODEL} is available locally...")
-        try:
-            ollama.show(LLM_MODEL)
-        except ollama.ResponseError as e:
-            if e.status_code == 404:
-                logger.info(f"Model {LLM_MODEL} not found. Downloading (this may take a while)...")
-                ui_queue.put({"type": "status", "process": "translator", "status": f"Downloading {LLM_MODEL}..."})
-                ollama.pull(LLM_MODEL)
-                logger.info(f"Model {LLM_MODEL} downloaded successfully.")
-            else:
-                raise e
+    # Ensure Ollama is running BEFORE attempting to load models. If it is
+    # offline, a background thread keeps retrying so the pipeline self-heals
+    # when the user (or the OS autostart) brings the server up later.
+    def _ollama_ready_watcher(stop_event: threading.Event):
+        """Retry Ollama startup + warmup until ready, then flip translator ready."""
+        while not stop_event.is_set():
+            time.sleep(OLLAMA_RETRY_INTERVAL)
+            if _ensure_ollama_running(ui_queue, timeout=10.0):
+                try:
+                    _warmup_ollama(ui_queue)
+                except Exception as e:
+                    logger.warning(f"Ollama warmup failed during retry: {e}")
+                    continue
+                _put_ui(ui_queue, {"type": "status", "process": "translator", "status": "ready"})
+                logger.info("[TRANSLATOR] Ready (recovered after Ollama started).")
+                return
 
-        logger.info(f"Warming up Ollama with model {LLM_MODEL}...")
-        ollama.chat(model=LLM_MODEL, messages=[{'role': 'user', 'content': '{"test":"hi"}'}], format='json', options={'temperature': 0.0}, keep_alive=-1)
-    except Exception as e:
-        logger.warning(f"Failed to pre-warm Ollama: {e}. Is Ollama running?")
+    ollama_up = _ensure_ollama_running(ui_queue)
+    stop_event = None
+    if ollama_up:
+        try:
+            _warmup_ollama(ui_queue)
+        except Exception as e:
+            logger.warning(f"Failed to pre-warm Ollama: {e}.")
+    else:
+        # Ollama is offline: do NOT report "ready" — the UI will keep the
+        # record button disabled and show the Ollama-offline hint. The watcher
+        # thread above upgrades the status as soon as the server is available.
+        stop_event = threading.Event()
+        threading.Thread(target=_ollama_ready_watcher, args=(stop_event,), daemon=True).start()
 
     # Bilingual conversation history: list of {"source": str, "translation": str, "lang": str}.
     # Guards access with a lock since the main loop and executor threads share it.
@@ -615,7 +777,8 @@ def start_translator(translation_queue: multiprocessing.Queue, ui_queue: multipr
     # queue ahead of the authoritative final translation, inflating
     # stop->display to 14-32s on long recordings.
     provisional_sem = threading.Semaphore(2)
-    ui_queue.put({"type": "status", "process": "translator", "status": "ready"})
+    if ollama_up:
+        ui_queue.put({"type": "status", "process": "translator", "status": "ready"})
 
     # We use a ThreadPoolExecutor to handle incoming requests concurrently without blocking the queue reader.
     # Provisional (partial) tasks run on a SEPARATE single-thread executor so
@@ -627,6 +790,8 @@ def start_translator(translation_queue: multiprocessing.Queue, ui_queue: multipr
             try:
                 task = translation_queue.get()
                 if task is None:
+                    if stop_event is not None:
+                        stop_event.set()
                     break
 
                 # Support 4-element (partial+timing), 3-element (timing), and

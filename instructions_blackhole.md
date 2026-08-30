@@ -7,3 +7,6 @@
 5. **CRÍTICO:** Activa la casilla **"Corrección de deriva" (Drift Correction)** junto a "BlackHole 2ch" para evitar desincronización de audio (glitches) en sesiones largas.
 6. En la configuración de sonido de macOS, selecciona el **Dispositivo de Salida Múltiple** como salida de audio.
 7. El sistema de interpretación capturará el audio seleccionando "BlackHole 2ch" como dispositivo de entrada.
+
+> **Windows:** Consulta [`docs/audio_routing.md`](docs/audio_routing.md) para alternativas
+> a BlackHole (VB-CABLE, Stereo Mix, etc.).

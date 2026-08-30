@@ -171,8 +171,9 @@ class TestMainWindow(unittest.TestCase):
         self.assertFalse(self.window.translator_ready)
         
     def test_poll_queue_status_both_ready(self):
-        """test_poll_queue_status_both_ready - handle transcriber and translator ready messages."""
+        """test_poll_queue_status_both_ready - handle transcriber, translator, and audio ready messages."""
         self.ui_queue.get_nowait.side_effect = [
+            {"type": "status", "process": "audio", "status": "ready"},
             {"type": "status", "process": "transcriber", "status": "ready"},
             {"type": "status", "process": "translator", "status": "ready"},
             queue.Empty
@@ -180,6 +181,7 @@ class TestMainWindow(unittest.TestCase):
         self.window.poll_queue()
         self.assertTrue(self.window.transcriber_ready)
         self.assertTrue(self.window.translator_ready)
+        self.assertTrue(self.window.audio_ready)
         self.assertTrue(self.window.action_btn.isEnabled())
         self.assertEqual(self.window.action_btn.text(), "Start Recording")
         
