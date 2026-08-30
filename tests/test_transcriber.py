@@ -373,5 +373,66 @@ class TestModelSelection(unittest.TestCase):
         self.assertEqual(kwargs.get("compute_type"), "int8")
 
 
+class TestBilingualPrompt(unittest.TestCase):
+    """Bilingual initial prompt for transcriptions (Phase 8)."""
+
+    @patch("src.transcriber.WhisperModel")
+    def test_partial_transcribe_uses_bilingual_prompt(self, mock_whisper):
+        """Partial chunks must receive the bilingual initial prompt with both
+        English and Spanish punctuation examples."""
+        from src.transcriber import TRANSCRIBE_INITIAL_PROMPT
+        self.assertIn("Hello", TRANSCRIBE_INITIAL_PROMPT)
+        self.assertIn("Hola", TRANSCRIBE_INITIAL_PROMPT)
+        self.assertIn("¿", TRANSCRIBE_INITIAL_PROMPT)
+
+        mock_model = MagicMock()
+        mock_whisper.return_value = mock_model
+        mock_seg = MagicMock()
+        mock_seg.text = "Hello"
+        mock_info = MagicMock()
+        mock_info.language = "en"
+        mock_info.language_probability = 0.95
+        mock_model.transcribe.return_value = ([mock_seg], mock_info)
+
+        from src.transcriber import start_transcriber
+        asr_q = queue.Queue()
+        tr_q = queue.Queue()
+        ui_q = queue.Queue()
+        asr_q.put((b"audio_data", 16000, False))
+        asr_q.put("QUIT")
+        start_transcriber(asr_q, tr_q, ui_q)
+
+        call_kwargs = mock_model.transcribe.call_args
+        kwargs = call_kwargs[1] if len(call_kwargs) > 1 else {}
+        self.assertIn("initial_prompt", kwargs)
+        self.assertEqual(kwargs["initial_prompt"], TRANSCRIBE_INITIAL_PROMPT)
+
+    @patch("src.transcriber.WhisperModel")
+    def test_final_transcribe_has_no_initial_prompt(self, mock_whisper):
+        """Final chunks must NOT receive an initial prompt (avoids whisper
+        hallucinating the prompt text when the audio is silent)."""
+        mock_model = MagicMock()
+        mock_whisper.return_value = mock_model
+        mock_seg = MagicMock()
+        mock_seg.text = "Hello world"
+        mock_info = MagicMock()
+        mock_info.language = "en"
+        mock_info.language_probability = 0.95
+        mock_model.transcribe.return_value = ([mock_seg], mock_info)
+
+        from src.transcriber import start_transcriber
+        asr_q = queue.Queue()
+        tr_q = queue.Queue()
+        ui_q = queue.Queue()
+        asr_q.put((b"audio_data", 16000, True))
+        asr_q.put("QUIT")
+        start_transcriber(asr_q, tr_q, ui_q)
+
+        call_kwargs = mock_model.transcribe.call_args
+        kwargs = call_kwargs[1] if len(call_kwargs) > 1 else {}
+        self.assertIsNone(kwargs.get("initial_prompt"),
+                          "final must not pass initial_prompt")
+
+
 if __name__ == "__main__":
     unittest.main()

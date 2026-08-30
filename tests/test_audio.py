@@ -1,5 +1,6 @@
 import os
 import sys
+import threading
 import unittest
 from unittest.mock import MagicMock, patch
 import queue
@@ -366,6 +367,208 @@ class TestAudioModule(unittest.TestCase):
         self.assertEqual(len(devices), 1)
         self.assertFalse(devices[0]["is_default"])
         self.assertEqual(devices[0]["type"], "input")
+
+
+# --- Block A: Auto-commit by silence (Phase 8) ---
+
+FRAME_SPEECH = (10000).to_bytes(2, 'little', signed=True) * 480
+FRAME_SILENCE = b'\x00' * 960
+# With _open_stream mock → actual_rate=16000, buffer_size=480.
+# Each frame = 30 ms. 67 frames silence = 2.01 s. 100 total frames = 3.0 s.
+
+
+class TestAutoCommit(unittest.TestCase):
+    """Auto-commit by silence (Phase 8) — tests run in a thread because
+    start_audio_capture blocks on the recording loop."""
+
+    def _reader(self, *segments):
+        """Returns a stream.read side_effect built from (speech, silence)
+        frame-count segments, then silence forever (loop never starves)."""
+        plan = []
+        for speech, silence in segments:
+            plan.extend([FRAME_SPEECH] * speech)
+            plan.extend([FRAME_SILENCE] * silence)
+        idx = [0]
+        def read(*args, **kwargs):
+            i = idx[0]
+            idx[0] += 1
+            if i < len(plan):
+                return plan[i]
+            return FRAME_SILENCE
+        return read
+
+    def _run_capture(self, reader, start_ts, control_queue, asr_queue):
+        mock_p = MagicMock()
+        mock_p.open.return_value = MagicMock()
+        mock_p.open.return_value.get_read_available.return_value = 0
+        mock_p.open.return_value.read.side_effect = reader
+        with patch('src.audio.pyaudio.PyAudio', return_value=mock_p):
+            start_audio_capture(asr_queue, control_queue)
+
+    def _collect_finals(self, asr_queue, timeout=5.0, quiet=1.5):
+        """Collect final 4-tuples, stopping early once no new final arrives
+        within `quiet` seconds (the auto-commit sequence is complete)."""
+        deadline = time.time() + timeout
+        finals = []
+        last_hit = time.time()
+        while time.time() < deadline:
+            try:
+                item = asr_queue.get_nowait()
+                if isinstance(item, tuple) and len(item) == 4:
+                    finals.append(item)
+                    last_hit = time.time()
+            except queue.Empty:
+                if time.time() - last_hit > quiet:
+                    break
+                time.sleep(0.02)
+        return finals
+
+    def test_audio_auto_commit_on_long_silence(self):
+        """50 speech frames (1.5s) + 300 silence (9s) → auto-commit at ~3.5s
+        (segment=3.5s, silence=2.0s). Final 4-tuple must appear before FINISH."""
+        asr_queue = queue.Queue()
+        control_queue = queue.Queue()
+        start_ts = time.time()
+        control_queue.put(("START", start_ts))
+
+        t = threading.Thread(target=self._run_capture, args=(
+            self._reader((50, 300)), start_ts, control_queue, asr_queue))
+        t.start()
+
+        auto_final = None
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            try:
+                item = asr_queue.get_nowait()
+                if isinstance(item, tuple) and len(item) == 4 and item[2] is True:
+                    auto_final = item
+                    break
+            except queue.Empty:
+                time.sleep(0.05)
+
+        control_queue.put(("FINISH", time.time()))
+        control_queue.put("QUIT")
+        t.join(timeout=5.0)
+        self.assertFalse(t.is_alive(), "capture thread did not exit")
+        self.assertIsNotNone(auto_final, "auto-commit final never emitted")
+
+        audio_array, rate, is_final, timing = auto_final
+        self.assertTrue(is_final)
+        self.assertEqual(timing["recording_start"], start_ts)
+        self.assertGreaterEqual(timing["recording_stop"], start_ts)
+
+        # Verify FINISH did not add a second final
+        finals = self._collect_finals(asr_queue, timeout=2.0)
+        self.assertEqual(len(finals), 0, "FINISH should not emit a second final after auto-commit with silence")
+
+    def test_audio_no_auto_commit_without_speech(self):
+        """All silence → never auto-commit. Only the FINISH final should appear."""
+        asr_queue = queue.Queue()
+        control_queue = queue.Queue()
+        start_ts = time.time()
+        control_queue.put(("START", start_ts))
+
+        t = threading.Thread(target=self._run_capture, args=(
+            self._reader((0, 999999)), start_ts, control_queue, asr_queue))
+        t.start()
+
+        time.sleep(0.5)  # enough silence (>2s) to trigger commit if speech were present
+        control_queue.put(("FINISH", time.time()))
+        control_queue.put("QUIT")
+        t.join(timeout=5.0)
+        self.assertFalse(t.is_alive(), "capture thread did not exit")
+
+        finals = self._collect_finals(asr_queue, timeout=2.0)
+        self.assertEqual(len(finals), 1, "expected exactly 1 final (from FINISH, not auto-commit)")
+        _, _, is_final, _ = finals[0]
+        self.assertTrue(is_final)
+
+    def test_audio_auto_commit_resets_segment(self):
+        """50 speech + 250 silence + 30 speech + 250 silence → 2 auto-commits.
+        The second commit must have recording_start > the first commit's."""
+        asr_queue = queue.Queue()
+        control_queue = queue.Queue()
+        start_ts = time.time()
+        control_queue.put(("START", start_ts))
+
+        t = threading.Thread(target=self._run_capture, args=(
+            self._reader((50, 250), (30, 250)), start_ts, control_queue, asr_queue))
+        t.start()
+
+        all_finals = self._collect_finals(asr_queue, timeout=8.0)
+        control_queue.put("QUIT")
+        t.join(timeout=5.0)
+        self.assertFalse(t.is_alive(), "capture thread did not exit")
+
+        self.assertEqual(len(all_finals), 2,
+                         f"expected 2 auto-commits, got {len(all_finals)}")
+        t1 = all_finals[0][3]["recording_start"]
+        t2 = all_finals[1][3]["recording_start"]
+        self.assertGreater(t2, t1, "second segment must have a later recording_start")
+
+    def test_audio_auto_commit_thought_pause_not_split(self):
+        """30 speech + 60 silence (1.8s thought pause) + 30 speech + 400 silence.
+        The pause must NOT split the utterance — only 1 auto-commit at the end."""
+        asr_queue = queue.Queue()
+        control_queue = queue.Queue()
+        start_ts = time.time()
+        control_queue.put(("START", start_ts))
+
+        t = threading.Thread(target=self._run_capture, args=(
+            self._reader((30, 60), (30, 400)), start_ts, control_queue, asr_queue))
+        t.start()
+
+        all_finals = self._collect_finals(asr_queue, timeout=8.0)
+        control_queue.put("QUIT")
+        t.join(timeout=5.0)
+        self.assertFalse(t.is_alive(), "capture thread did not exit")
+
+        self.assertEqual(len(all_finals), 1,
+                         f"thought pause should not split — got {len(all_finals)} finals")
+
+    def test_audio_finish_after_commit_adds_nothing(self):
+        """50 speech + 300 silence → auto-commit. FINISH with residual silence
+        must not emit a second (empty) final."""
+        asr_queue = queue.Queue()
+        control_queue = queue.Queue()
+        start_ts = time.time()
+        control_queue.put(("START", start_ts))
+
+        t = threading.Thread(target=self._run_capture, args=(
+            self._reader((50, 300)), start_ts, control_queue, asr_queue))
+        t.start()
+
+        auto_final = None
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            try:
+                item = asr_queue.get_nowait()
+                if isinstance(item, tuple) and len(item) == 4 and item[2] is True:
+                    auto_final = item
+                    break
+            except queue.Empty:
+                time.sleep(0.05)
+        self.assertIsNotNone(auto_final)
+
+        time.sleep(0.3)  # let residual silence frames accumulate
+        control_queue.put(("FINISH", time.time()))
+        time.sleep(0.1)  # give time for processing
+        control_queue.put("QUIT")
+        t.join(timeout=5.0)
+        self.assertFalse(t.is_alive())
+
+        # Collect any finals that appeared AFTER the auto-commit
+        post_finals = []
+        while not asr_queue.empty():
+            try:
+                item = asr_queue.get_nowait()
+                if isinstance(item, tuple) and len(item) == 4:
+                    post_finals.append(item)
+            except queue.Empty:
+                break
+        self.assertEqual(len(post_finals), 0,
+                         f"FINISH with residual silence should not add finals; got {len(post_finals)}")
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -52,8 +52,16 @@ DEFAULT_LANGUAGE = "en"
 # still fires on every chunk while dropping near-no-op revisions.
 PARTIAL_PROGRESS_THRESHOLD = 25
 
-PROMPT_ES = "Hola. Esta es una transcripción en español perfecta, con excelente ortografía, puntuación y gramática."
-PROMPT_EN = "Hello. This is a perfect English transcription, with excellent spelling, punctuation, and grammar."
+# Bilingual initial prompt for partial transcriptions (Phase 8). Short
+# examples of EN and ES punctuation, capitals, and question marks so
+# Whisper applies correct formatting regardless of the utterance language.
+# Only used for partial chunks (beam 1); finals skip the prompt to avoid
+# hallucinating this text on silent audio.
+TRANSCRIBE_INITIAL_PROMPT = (
+    "Hello, how are you? Hola, ¿qué tal? "
+    "This is a test. Esto es una prueba. "
+    "I need help. Necesito ayuda."
+)
 
 def _send_to_queue(q, msg, block=False, timeout=None, error_msg="Queue put failed"):
     return put_best_effort(
@@ -194,18 +202,12 @@ def start_transcriber(
 
             transcription_start = time.time()
 
-            # Determine initial prompt based on previously detected language.
-            # Only used for PARTIAL chunks: on a final, an initial prompt makes
-            # Whisper "continue" the prompt text when the audio is silent
-            # (observed: pure silence transcribed as "This is a perfect English
-            # transcription..."). The final already knows the language, so the
-            # prompt is skipped and hallucination thresholds reject junk output.
-            prompt = None
-            if not is_final:
-                if detected_language == "es":
-                    prompt = PROMPT_ES
-                elif detected_language == "en":
-                    prompt = PROMPT_EN
+            # Determine initial prompt for partial chunks. A bilingual prompt
+            # forces Whisper to use correct punctuation in both languages
+            # without biasing toward one language. Finals skip the prompt to
+            # avoid hallucinating the prompt text when the audio is silent
+            # (observed: pure silence transcribed as "Hello, how are you?").
+            prompt = TRANSCRIBE_INITIAL_PROMPT if not is_final else None
 
             segments, info = model.transcribe(
                 audio_data,

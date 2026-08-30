@@ -434,5 +434,31 @@ class TestMainWindow(unittest.TestCase):
         self.assertIn("llama3.2:3b", self.window.sys_status_label.text())
         self.assertIn("fallback", self.window.sys_status_label.text())
 
+    def test_translation_while_recording_keeps_button(self):
+        """A translation event arriving mid-recording (auto-commit) must NOT
+        reset the UI state — the button must stay 'Stop Recording', the
+        translation must appear in current_label, and history must be updated."""
+        self.window.is_recording = True
+        self.window.action_btn.setText("Stop Recording")
+        self.window.current_label.show()
+        self.window.current_label.setText("Original transcript...")
+
+        with patch.object(self.window, '_reset_ui_state') as mock_reset, \
+             patch.object(self.window, '_add_to_history') as mock_history, \
+             patch.object(self.window, '_log_message') as mock_log:
+            self.ui_queue.get_nowait.side_effect = [
+                {"type": "translation", "original": "hello world",
+                 "translated": "hola mundo", "latency": 1.5, "timing": {}},
+                queue.Empty,
+            ]
+            self.window.poll_queue()
+
+        mock_reset.assert_not_called()
+        mock_history.assert_called_once_with("hello world", "hola mundo", 1.5)
+        mock_log.assert_called_once()
+        self.assertEqual(self.window.action_btn.text(), "Stop Recording",
+                         "mid-recording translation must not flip the button to Start")
+        self.assertIn("hola mundo", self.window.current_label.text())
+
 if __name__ == '__main__':
     unittest.main()

@@ -20,6 +20,15 @@ MAX_RECORDING_MINUTES = 5
 # Keeps the system in a non-crashing "waiting" state until a microphone
 # (or virtual audio device) becomes available.
 DEVICE_RETRY_INTERVAL = 2.0
+# Auto-commit by silence (Phase 8): when the speaker pauses for
+# SILENCE_COMMIT_SECONDS during an ongoing recording, the accumulated audio
+# is treated as a final segment and translated immediately — the user no
+# longer waits for the Stop button on long utterances. Segments shorter
+# than MIN_AUTO_COMMIT_SECONDS are never committed (protects interjections
+# and mid-thought pauses from being cut mid-sentence).
+SILENCE_RMS_THRESHOLD = 0.005
+SILENCE_COMMIT_SECONDS = 2.0
+MIN_AUTO_COMMIT_SECONDS = 3.0
 
 # Host API preference for deduplication on Windows. PortAudio exposes the same
 # physical device once per host API (MME, DirectSound, WASAPI, WDM-KS). WASAPI
@@ -325,6 +334,11 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
     recording_start_ts = None
     recording_stop_ts = None
 
+    # Auto-commit by silence state (per recording segment).
+    segment_has_speech = False
+    silence_frames = 0
+    auto_committed_in_recording = False
+
     def _try_open_stream():
         """Attempt to (re)open the input stream; returns True on success.
 
@@ -396,6 +410,9 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                     partial_start_index = 0
                     truncation_reported = False
                     truncated_frames = 0
+                    segment_has_speech = False
+                    silence_frames = 0
+                    auto_committed_in_recording = False
                     logger.info("[AUDIO] Recording started")
                     try:
                         # Flush any stale audio from hardware buffer
@@ -417,18 +434,22 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                     # Clear any stale partials from the queue.
                     _drain_queue(asr_queue)
 
-                    if frames:
+                    if frames and (segment_has_speech or not auto_committed_in_recording):
                         audio_array = _process_audio_frames(frames, actual_rate)
                         _push_final(
                             asr_queue, final_queue, audio_array, timing,
                             note=f": {len(frames)} frames ({len(audio_array)} samples, {recording_duration:.2f}s)",
                         )
-                    else:
+                    elif not auto_committed_in_recording:
+                        # Empty recording with no auto-commits: preserve the
+                        # original empty-final (transcriber emits a cancel).
                         empty_array = np.array([], dtype=np.float32)
                         _push_final(
                             asr_queue, final_queue, empty_array, timing,
                             note=" (empty)",
                         )
+                    # else: auto-committed and only trailing silence remains —
+                    # nothing left to translate, do not emit a spurious final.
 
                     frames = []
                     frames_since_last_partial = 0
@@ -511,6 +532,41 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                         pass
                     partial_start_index = len(frames)
                     frames_since_last_partial = 0
+
+                # Auto-commit by silence: measure the energy of the frame just
+                # read. A long run of low-energy frames after speech means the
+                # utterance ended — commit the accumulated audio as a FINAL so
+                # translation starts immediately instead of waiting for Stop.
+                frame_float = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
+                frame_rms = float(np.sqrt(np.mean(np.square(frame_float))))
+                if frame_rms >= SILENCE_RMS_THRESHOLD:
+                    segment_has_speech = True
+                    silence_frames = 0
+                else:
+                    silence_frames += 1
+
+                segment_seconds = len(frames) * buffer_size / actual_rate
+                silence_seconds = silence_frames * buffer_size / actual_rate
+                if (segment_has_speech and segment_seconds >= MIN_AUTO_COMMIT_SECONDS
+                        and silence_seconds >= SILENCE_COMMIT_SECONDS):
+                    audio_array = _process_audio_frames(frames, actual_rate)
+                    commit_timing = {
+                        "recording_start": recording_start_ts,
+                        "recording_stop": time.time(),
+                    }
+                    _push_final(
+                        asr_queue, final_queue, audio_array, commit_timing,
+                        note=f" (auto-commit): {len(frames)} frames ({len(audio_array)} samples, {segment_seconds:.2f}s)",
+                    )
+                    logger.info(f"[AUDIO] Auto-commit by silence at {segment_seconds:.2f}s of audio.")
+                    frames = []
+                    partial_start_index = 0
+                    frames_since_last_partial = 0
+                    silence_frames = 0
+                    segment_has_speech = False
+                    recording_start_ts = time.time()
+                    truncation_reported = False
+                    auto_committed_in_recording = True
             else:
                 # Discard hardware buffer to prevent overflow while idle
                 try:

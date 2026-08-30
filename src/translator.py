@@ -191,7 +191,7 @@ def _warmup_ollama(ui_queue) -> bool:
         model=model,
         messages=[{'role': 'user', 'content': '{"test":"hi"}'}],
         format='json',
-        options={'temperature': 0.0},
+        options={'temperature': 0.0, 'num_ctx': 2048},
         keep_alive=-1,
     )
     return True
@@ -388,6 +388,11 @@ def translate_ollama(text: str, source_lang: str, target_lang: str,
                 # copyright/bullet characters (observed: 2939-char response
                 # with literal \u00a9 \u00b7 \u00b7 ...).
                 'repeat_penalty': 1.2,
+                # Cap context to 2048 tokens — enough for the prompt + ~5
+                # turns of context + 70 s of audio text, and it keeps the
+                # KV cache small so the LLM fits in 6 GB VRAM alongside
+                # Whisper small float16.
+                'num_ctx': 2048,
             }
         )
         logger.info(f"[TRANSLATOR] LLM response received ({len(response['message']['content'])} chars)")

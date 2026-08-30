@@ -684,6 +684,18 @@ class MainWindow(QMainWindow):
         self._add_to_history(original, translated, latency)
         self._log_message(original, translated, timing)
         logger.info(f"[UI] Translation displayed ({len(translated)} chars): '{translated}'")
+        if self.is_recording:
+            # Auto-committed segment mid-recording: show the translation
+            # in the preview label but keep the recording state (button,
+            # current transcript) untouched — the next partial/final from
+            # the new segment will overwrite it.
+            self.current_label.show()
+            self.current_label.setText(f"{original}\n→ {translated}")
+            self.current_label.setStyleSheet(
+                "color: #D1FAE5; font-size: 18px; padding: 16px; "
+                "background-color: #064E3B; border: 1px solid #047857; border-radius: 8px;"
+            )
+            return
         self._reset_ui_state()
 
     def _handle_cancel(self, item):

@@ -46,6 +46,8 @@ class TestTranslator(unittest.TestCase):
         args, kwargs = mock_chat.call_args
         self.assertEqual(kwargs['model'], translator.ACTIVE_LLM_MODEL)
         self.assertEqual(kwargs['format'], 'json')
+        self.assertEqual(kwargs['options'].get('num_ctx'), 2048,
+                         "num_ctx=2048 keeps KV cache small enough for 6 GB VRAM")
         self.assertIn("Prev Context", kwargs['messages'][0]['content'])
 
     @patch('src.translator.ollama.chat')
@@ -221,8 +223,9 @@ class TestTranslator(unittest.TestCase):
 
     @patch('src.translator.get_glossary_manager')
     @patch('src.translator.concurrent.futures.ThreadPoolExecutor')
+    @patch('src.translator.ollama.show', return_value={})
     @patch('src.translator.ollama.chat')
-    def test_translator_limits_provisional_in_flight(self, mock_chat, mock_executor_class, mock_get_glossary):
+    def test_translator_limits_provisional_in_flight(self, mock_chat, mock_show, mock_executor_class, mock_get_glossary):
         """At most 2 provisional tasks are submitted while none have completed."""
         mock_glossary = MagicMock()
         mock_get_glossary.return_value = mock_glossary
@@ -245,8 +248,9 @@ class TestTranslator(unittest.TestCase):
 
     @patch('src.translator.get_glossary_manager')
     @patch('src.translator.concurrent.futures.ThreadPoolExecutor')
+    @patch('src.translator.ollama.show', return_value={})
     @patch('src.translator.ollama.chat')
-    def test_translator_context_history_limit(self, mock_chat, mock_executor_class, mock_get_glossary):
+    def test_translator_context_history_limit(self, mock_chat, mock_show, mock_executor_class, mock_get_glossary):
         """Context history is capped at 10 bilingual pairs and never contains the current text."""
         mock_glossary = MagicMock()
         mock_get_glossary.return_value = mock_glossary
@@ -283,8 +287,9 @@ class TestTranslator(unittest.TestCase):
 
     @patch('src.translator.translate_ollama')
     @patch('src.translator.get_glossary_manager')
+    @patch('src.translator.ollama.show', return_value={})
     @patch('src.translator.ollama.chat')
-    def test_translator_timing_propagation(self, mock_chat, mock_get_glossary, mock_translate_ollama):
+    def test_translator_timing_propagation(self, mock_chat, mock_show, mock_get_glossary, mock_translate_ollama):
         """Test timing dict receives start/end stamps."""
         mock_glossary = MagicMock()
         mock_get_glossary.return_value = mock_glossary
@@ -307,8 +312,9 @@ class TestTranslator(unittest.TestCase):
 
     @patch('src.translator.translate_ollama')
     @patch('src.translator.get_glossary_manager')
+    @patch('src.translator.ollama.show', return_value={})
     @patch('src.translator.ollama.chat')
-    def test_translator_legacy_2element_tuple(self, mock_chat, mock_get_glossary, mock_translate_ollama):
+    def test_translator_legacy_2element_tuple(self, mock_chat, mock_show, mock_get_glossary, mock_translate_ollama):
         """Test 2-element tuple without timing works correctly."""
         mock_glossary = MagicMock()
         mock_get_glossary.return_value = mock_glossary
@@ -726,10 +732,10 @@ class TestTranslator(unittest.TestCase):
     # --- Block 3: Hardware-aware model selection (Phase 7) ---
 
     def test_active_llm_model_is_valid(self):
-        """ACTIVE_LLM_MODEL must be either the default 3B or the heavy 8B."""
+        """ACTIVE_LLM_MODEL must be one of the valid tier models."""
         self.assertIn(
             translator.ACTIVE_LLM_MODEL,
-            (translator.LLM_MODEL, "llama3.1:8b"),
+            (translator.LLM_MODEL, "llama3.1:8b", "qwen2.5:7b"),
         )
 
     @patch('src.translator.ollama.pull')
@@ -740,18 +746,18 @@ class TestTranslator(unittest.TestCase):
         """A 404 from show() must trigger pull(), then warmup chat with the
         same heavy model, and emit a model_download UI event."""
         ui_queue = MagicMock()
-        with patch.object(translator, 'ACTIVE_LLM_MODEL', "llama3.1:8b"):
+        with patch.object(translator, 'ACTIVE_LLM_MODEL', "qwen2.5:7b"):
             ok = translator._warmup_ollama(ui_queue)
         self.assertTrue(ok)
-        mock_pull.assert_called_once_with("llama3.1:8b")
+        mock_pull.assert_called_once_with("qwen2.5:7b")
         mock_chat.assert_called_once()
         _, chat_kwargs = mock_chat.call_args
-        self.assertEqual(chat_kwargs['model'], "llama3.1:8b")
+        self.assertEqual(chat_kwargs['model'], "qwen2.5:7b")
         status_msgs = [c.args[0] for c in ui_queue.put.call_args_list
                        if c.args and c.args[0].get("type") == "status"]
         download = [m for m in status_msgs if m.get("status") == "model_download"]
         self.assertEqual(len(download), 1)
-        self.assertEqual(download[0]["model"], "llama3.1:8b")
+        self.assertEqual(download[0]["model"], "qwen2.5:7b")
 
     @patch('src.translator.ollama.pull', side_effect=RuntimeError("pull failed"))
     @patch('src.translator.ollama.chat')
@@ -761,10 +767,12 @@ class TestTranslator(unittest.TestCase):
         """When pull() fails, ACTIVE_LLM_MODEL must degrade to the default 3B,
         the fallback must be reported to the UI, and warmup must use the 3B."""
         ui_queue = MagicMock()
-        with patch.object(translator, 'ACTIVE_LLM_MODEL', "llama3.1:8b"):
+        with patch.object(translator, 'ACTIVE_LLM_MODEL', "qwen2.5:7b"):
             ok = translator._warmup_ollama(ui_queue)
+            # Assert the degradation INSIDE the with block: patch.object
+            # restores the original module value on exit.
+            self.assertEqual(translator.ACTIVE_LLM_MODEL, translator.LLM_MODEL)
         self.assertTrue(ok)
-        self.assertEqual(translator.ACTIVE_LLM_MODEL, translator.LLM_MODEL)
         mock_chat.assert_called_once()
         _, chat_kwargs = mock_chat.call_args
         self.assertEqual(chat_kwargs['model'], translator.LLM_MODEL)
@@ -779,12 +787,12 @@ class TestTranslator(unittest.TestCase):
     def test_warmup_uses_active_model(self, mock_show, mock_chat):
         """Warmup must call ollama.chat with the ACTIVE_LLM_MODEL."""
         ui_queue = MagicMock()
-        with patch.object(translator, 'ACTIVE_LLM_MODEL', "llama3.1:8b"):
+        with patch.object(translator, 'ACTIVE_LLM_MODEL', "qwen2.5:7b"):
             ok = translator._warmup_ollama(ui_queue)
         self.assertTrue(ok)
         mock_chat.assert_called_once()
         _, chat_kwargs = mock_chat.call_args
-        self.assertEqual(chat_kwargs['model'], "llama3.1:8b")
+        self.assertEqual(chat_kwargs['model'], "qwen2.5:7b")
 
 
 class TestGlossaryModule(unittest.TestCase):

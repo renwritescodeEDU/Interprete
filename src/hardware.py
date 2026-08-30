@@ -1,20 +1,13 @@
 """Hardware detection and dynamic model selection (Phase 7).
 
-Central module that answers two questions:
+Central place that answers two questions:
 
-1. **What hardware is available?** — is the CUDA 12 runtime loadable, and how
-   much VRAM (GB) does the primary GPU report?
-2. **Which models should we run?** — the faster-whisper configuration and the
-   Ollama LLM, scaled to the detected hardware.
+1. **What hardware is available?** — CUDA runtime loadable? VRAM in GB?
+2. **Which models should run?** — faster-whisper config + Ollama LLM.
 
 Everything here is deliberately safe: any detection failure degrades to the
-CPU fallback and is logged clearly, so the pipeline ALWAYS boots. User
-overrides in ``.config/preferences.json`` take precedence over auto-scaling.
-
-Tiers (as specified):
-* Whisper: GPU >= 8 GB -> ``medium`` + ``float16``; GPU 4-8 GB -> ``small`` +
-  ``float16``; CPU or GPU < 4 GB -> ``small`` + ``int8``.
-* Ollama: GPU >= 8 GB VRAM -> ``llama3.1:8b``; otherwise ``llama3.2:3b``.
+CPU fallback and is logged, so the pipeline ALWAYS boots. User overrides in
+``.config/preferences.json`` take precedence over auto-detection.
 """
 
 import ctypes
@@ -30,17 +23,20 @@ from src.config import load_preferences
 
 logger = logging.getLogger(__name__)
 
-# Whisper VRAM tiers (GB)
-VRAM_TIER_HEAVY = 8.0   # GPU >= 8 GB -> medium + float16
-VRAM_TIER_MID = 4.0     # GPU >= 4 GB -> small + float16
-# Ollama heavy-model threshold (GB of VRAM)
+# Whisper tiers by VRAM (GB)
+VRAM_TIER_HEAVY = 8.0    # GPU >= 8 GB -> medium + float16
+VRAM_TIER_MID = 4.0      # GPU 4-8 GB -> small + float16
+# Ollama LLM tiers by VRAM (GB): heavy needs a comfortable GPU, mid fits
+# 6 GB cards via Q4 quantization + a reduced 2048-token context.
 LLM_HEAVY_VRAM_GB = 8.0
+LLM_MID_VRAM_GB = 5.5
 
-# Absolute fallbacks
+# Absolute fallback models
 DEFAULT_WHISPER_MODEL = "small"
 DEFAULT_WHISPER_COMPUTE = "int8"
 DEFAULT_LLM_MODEL = "llama3.2:3b"
 HEAVY_LLM_MODEL = "llama3.1:8b"
+MID_LLM_MODEL = "qwen2.5:7b"
 
 
 def _dlls_loadable(libs):
@@ -63,6 +59,7 @@ def _locate_cuda_bin():
     import glob
 
     candidates = []
+    # Environment variables set by the CUDA installer (CUDA_PATH / CUDA_PATH_V12_x)
     for var in (
         "CUDA_PATH", "CUDA_PATH_V12_8", "CUDA_PATH_V12_7", "CUDA_PATH_V12_6",
         "CUDA_PATH_V12_5", "CUDA_PATH_V12_4", "CUDA_PATH_V12_3", "CUDA_PATH_V12_2",
@@ -72,6 +69,7 @@ def _locate_cuda_bin():
         if val:
             candidates.append(os.path.join(val, "bin"))
 
+    # Default install root: prefer the highest v12.x found.
     if sys.platform == "win32":
         root = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"
         for d in sorted(glob.glob(os.path.join(root, "v12.*")), reverse=True):
@@ -84,23 +82,29 @@ def _locate_cuda_bin():
 
 
 def _cuda_runtime_loadable() -> bool:
-    """True when the CUDA 12 runtime DLLs are loadable (Windows) or the
-    platform has no CUDA runtime requirement (Linux/other)."""
+    """Windows: confirm the CUDA 12 runtime DLLs are loadable, adding the
+    toolkit bin dir to the DLL search path if needed. Non-Windows: True
+    (macOS handled in get_hardware_profile)."""
     if sys.platform == "darwin":
         return False
     if sys.platform == "win32":
         required = ("cublas64_12.dll", "cublasLt64_12.dll", "cudart64_12.dll")
         if not _dlls_loadable(required):
+            # The DLLs exist in the toolkit but aren't on PATH. Find the
+            # toolkit and add its bin dir to this process's DLL search path
+            # so the lazy load at transcribe time succeeds.
             cuda_bin = _locate_cuda_bin()
             if cuda_bin and hasattr(os, "add_dll_directory"):
                 try:
                     os.add_dll_directory(cuda_bin)
                     logger.info(
-                        f"[HARDWARE] Added CUDA Toolkit bin to the DLL search path: {cuda_bin}"
+                        f"[HARDWARE] Added CUDA Toolkit bin to the DLL "
+                        f"search path: {cuda_bin}"
                     )
                 except Exception as e:
                     logger.warning(
-                        f"[HARDWARE] Could not add {cuda_bin} to the DLL search path: {e}"
+                        f"[HARDWARE] Could not add {cuda_bin} to the DLL "
+                        f"search path: {e}"
                     )
             if not _dlls_loadable(required):
                 logger.warning(
@@ -121,7 +125,7 @@ def _cuda_device_count() -> int:
 
 
 def _query_vram_gb() -> float:
-    """Total VRAM in GB via nvidia-smi. Returns 0.0 when unavailable."""
+    """Approximate total VRAM in GB via nvidia-smi. 0.0 when unavailable."""
     if sys.platform == "darwin":
         return 0.0
     try:
@@ -149,7 +153,7 @@ class HardwareProfile:
 
 @lru_cache(maxsize=1)
 def get_hardware_profile() -> HardwareProfile:
-    """Detect the hardware once per process. NEVER raises — always returns a profile."""
+    """Detect hardware once per process. NEVER raises — always a profile."""
     if sys.platform == "darwin":
         logger.info("[HARDWARE] macOS detected — CPU only (no CUDA backend).")
         return HardwareProfile(device="cpu", vram_gb=0.0, cuda_available=False)
@@ -167,10 +171,10 @@ def get_hardware_profile() -> HardwareProfile:
 
 
 def select_whisper_config(prefs: dict = None) -> dict:
-    """Choose the faster-whisper model/compute_type/device for this machine.
+    """Choose the faster-whisper model/compute_type for this machine.
 
-    Precedence: user override (``whisper_model`` / ``whisper_compute_type``)
-    > hardware auto-scaling. Always returns a usable config.
+    User overrides (whisper_model / whisper_compute_type) win; otherwise
+    scale by VRAM. Always returns a usable (model, compute_type, device).
     """
     if prefs is None:
         prefs = load_preferences()
@@ -205,8 +209,8 @@ def select_whisper_config(prefs: dict = None) -> dict:
 def select_llm_model(prefs: dict = None) -> str:
     """Choose the Ollama LLM for this machine.
 
-    Precedence: user override (``llm_model``) > heavy model on GPU >= 8 GB
-    VRAM > 3B default.
+    User override (llm_model) wins; otherwise the heavier 8B model only
+    when a CUDA device with >= 8 GB VRAM is available. Falls back to 3B.
     """
     if prefs is None:
         prefs = load_preferences()
@@ -223,6 +227,12 @@ def select_llm_model(prefs: dict = None) -> str:
             f"(GPU {profile.vram_gb:.1f} GB VRAM)."
         )
         return HEAVY_LLM_MODEL
+    if profile.device == "cuda" and profile.vram_gb >= LLM_MID_VRAM_GB:
+        logger.info(
+            f"[OLLAMA] Auto-selected mid model {MID_LLM_MODEL} "
+            f"(GPU {profile.vram_gb:.1f} GB VRAM — fits with Q4 + 2048 context)."
+        )
+        return MID_LLM_MODEL
 
     logger.info(f"[OLLAMA] Auto-selected model {DEFAULT_LLM_MODEL} (CPU or modest GPU).")
     return DEFAULT_LLM_MODEL
