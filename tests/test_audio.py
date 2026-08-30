@@ -526,6 +526,92 @@ class TestAutoCommit(unittest.TestCase):
         self.assertEqual(len(all_finals), 1,
                          f"thought pause should not split — got {len(all_finals)} finals")
 
+    def test_audio_finish_after_ceiling_commit_does_not_push_tiny_residual(self):
+        """Regression (Phase 9, log 14:42:56): after a safety-ceiling auto-commit,
+        a FINISH with only a tiny residual tail (a few frames) must NOT push a
+        second final — a near-empty final makes the transcriber emit a spurious
+        'no_speech' cancel that overwrites the good translation in the UI."""
+        asr_queue = queue.Queue()
+        control_queue = queue.Queue()
+        start_ts = time.time()
+        control_queue.put(("START", start_ts))
+
+        # 500 speech frames (15 s) trigger the ceiling commit; then silence.
+        t = threading.Thread(target=self._run_capture, args=(
+            self._reader((500, 200)), start_ts, control_queue, asr_queue))
+        t.start()
+
+        # Wait for the ceiling auto-commit
+        commit = None
+        deadline = time.time() + 8.0
+        while time.time() < deadline:
+            try:
+                item = asr_queue.get_nowait()
+                if isinstance(item, tuple) and len(item) == 4 and item[2] is True:
+                    commit = item
+                    break
+            except queue.Empty:
+                time.sleep(0.05)
+        self.assertIsNotNone(commit, "ceiling auto-commit never emitted")
+
+        # FINISH arrives ~immediately: only a tiny residual (silence) is buffered.
+        control_queue.put(("FINISH", time.time()))
+        time.sleep(0.1)
+        control_queue.put("QUIT")
+        t.join(timeout=5.0)
+        self.assertFalse(t.is_alive(), "capture thread did not exit")
+
+        # No additional final may be pushed after the commit.
+        post_finals = []
+        while not asr_queue.empty():
+            try:
+                item = asr_queue.get_nowait()
+                if isinstance(item, tuple) and len(item) == 4:
+                    post_finals.append(item)
+            except queue.Empty:
+                break
+        self.assertEqual(len(post_finals), 0,
+                         f"tiny residual must not be pushed as a final; got {len(post_finals)}")
+
+    def test_audio_finish_pushes_meaningful_residual_after_commit(self):
+        """After an auto-commit, a MEANINGFUL residual (>= 0.5 s of speech)
+        must still be committed (via turn_end auto-commit or the FINISH path) —
+        real content must never be lost."""
+        asr_queue = queue.Queue()
+        control_queue = queue.Queue()
+        start_ts = time.time()
+        control_queue.put(("START", start_ts))
+
+        # 500 speech (ceiling commit at 15 s) + 60 more speech (1.8 s residual)
+        t = threading.Thread(target=self._run_capture, args=(
+            self._reader((500, 0), (60, 200)), start_ts, control_queue, asr_queue))
+        t.start()
+
+        commit = None
+        deadline = time.time() + 8.0
+        while time.time() < deadline:
+            try:
+                item = asr_queue.get_nowait()
+                if isinstance(item, tuple) and len(item) == 4 and item[2] is True:
+                    commit = item
+                    break
+            except queue.Empty:
+                time.sleep(0.05)
+        self.assertIsNotNone(commit, "ceiling auto-commit never emitted")
+
+        # Collect all finals (the residual may be committed by turn_end or FINISH).
+        all_finals = self._collect_finals(asr_queue, timeout=6.0)
+        control_queue.put("QUIT")
+        t.join(timeout=5.0)
+        self.assertFalse(t.is_alive(), "capture thread did not exit")
+
+        self.assertGreaterEqual(len(all_finals), 1,
+                                "meaningful residual speech must be committed")
+        # The second final must carry real content (>= 0.5 s of audio).
+        residual_samples = all_finals[-1][0].size
+        self.assertGreaterEqual(residual_samples, int(0.5 * 16000),
+                                f"residual must contain >= 0.5 s of audio, got {residual_samples} samples")
+
     def test_audio_finish_after_commit_adds_nothing(self):
         """50 speech + 300 silence → auto-commit. FINISH with residual silence
         must not emit a second (empty) final."""

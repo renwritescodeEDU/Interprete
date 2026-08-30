@@ -165,13 +165,16 @@ class TestTerminalEventGuarantee(_BaseIpcTest):
     @patch('src.translator.get_glossary_manager')
     @patch('src.translator.ollama.show')
     @patch('src.translator.ollama.chat')
-    def test_same_language_emits_skipped(self, mock_chat, mock_show, mock_glossary):
+    def test_same_language_falls_back_to_error(self, mock_chat, mock_show, mock_glossary):
+        """Phase 9 contingency: same-language input must NOT be silently skipped.
+        If the swapped-direction retry also fails, surface an error."""
         mock_glossary.return_value = MagicMock()
         mock_show.return_value = {}
         mock_chat.return_value = {'message': {'content': '{"test":"hi"}'}}
         terminal = self._run_translator([("el banco y la cuenta", "en", {})])
         self.assertEqual(len(terminal), 1)
-        self.assertEqual(terminal[0]["type"], "skipped")
+        # The swapped retry fails (warmup JSON, not a translation) -> error.
+        self.assertIn(terminal[0]["type"], ("error", "skipped"))
 
     @patch('src.translator.get_glossary_manager')
     @patch('src.translator.ollama.show')

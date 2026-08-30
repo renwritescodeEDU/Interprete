@@ -127,21 +127,98 @@ class TestTranslator(unittest.TestCase):
         self.assertEqual(put_arg["timing"], timing)
 
     @patch('src.translator.translate_ollama')
-    def test_process_translation_task_same_language_emits_skipped(self, mock_translate_ollama):
-        """Same-language text must emit a 'skipped' terminal event, never a silent return."""
+    def test_process_translation_task_same_language_retries_opposite_direction(self, mock_translate_ollama):
+        """Phase 9 contingency: when the ASR language was wrong (text is already
+        in the target language), the worker must retry with the OPPOSITE
+        direction instead of silently skipping."""
+        mock_translate_ollama.return_value = ("the bank and the account", 1.5)
         ui_queue = MagicMock()
         timing = {"audio_start": 0.5}
 
+        # 'en' detected, but text is Spanish -> same-language guard fires.
+        # The worker must swap direction (es -> en) and deliver a translation.
         translator.process_translation_task(
             ("el banco y la cuenta", "en"), ["Context"], ui_queue, timing
         )
 
-        mock_translate_ollama.assert_not_called()
-        ui_queue.put.assert_called_once()
+        # Retried with the opposite direction: source=Spanish, target=English
+        call_args = mock_translate_ollama.call_args[0]
+        self.assertEqual(call_args[1], "Spanish")
+        self.assertEqual(call_args[2], "English")
+
         msg = ui_queue.put.call_args[0][0]
-        self.assertEqual(msg["type"], "skipped")
-        self.assertEqual(msg["reason"], "same_language")
+        self.assertEqual(msg["type"], "translation")
         self.assertEqual(msg["original"], "el banco y la cuenta")
+        self.assertEqual(msg["translated"], "the bank and the account")
+
+    @patch('src.translator.translate_ollama', return_value=(None, 1.0))
+    def test_process_translation_task_same_language_retry_failure_emits_error(self, mock_translate_ollama):
+        """If the opposite-direction retry also fails, emit an error — never a
+        silent skip and never a fake translation."""
+        ui_queue = MagicMock()
+        translator.process_translation_task(
+            ("el banco y la cuenta", "en"), ["Context"], ui_queue, {"audio_start": 0.5}
+        )
+        msg = ui_queue.put.call_args[0][0]
+        self.assertEqual(msg["type"], "error")
+
+    @patch('src.translator.translate_ollama',
+           side_effect=[("el banco y la cuenta", 1.5), ("the bank and the account", 1.5)])
+    def test_process_translation_task_echo_retries_with_strict_prompt(self, mock_translate_ollama):
+        """Phase 9 contingency: when the model echoes the source language, the
+        worker must retry ONCE with a strict prompt before giving up."""
+        ui_queue = MagicMock()
+        translator.process_translation_task(
+            ("el banco y la cuenta", "es"), ["Context"], ui_queue, {"audio_start": 0.5}
+        )
+        self.assertEqual(mock_translate_ollama.call_count, 2)
+        # Second call must use the strict prompt
+        strict_call = mock_translate_ollama.call_args_list[1]
+        self.assertTrue(strict_call.kwargs.get("strict", False))
+        msg = ui_queue.put.call_args[0][0]
+        self.assertEqual(msg["type"], "translation")
+        self.assertEqual(msg["translated"], "the bank and the account")
+
+    @patch('src.translator.translate_ollama',
+           side_effect=[("el banco y la cuenta", 1.5), ("el banco y la cuenta", 1.5)])
+    def test_process_translation_task_echo_strict_failure_emits_error(self, mock_translate_ollama):
+        """If the strict retry still echoes, emit an error (never display the echo)."""
+        ui_queue = MagicMock()
+        translator.process_translation_task(
+            ("el banco y la cuenta", "es"), ["Context"], ui_queue, {"audio_start": 0.5}
+        )
+        self.assertEqual(mock_translate_ollama.call_count, 2)
+        msg = ui_queue.put.call_args[0][0]
+        self.assertEqual(msg["type"], "error")
+        self.assertIn("English", msg["message"])
+
+    @patch('src.translator.ollama.chat')
+    def test_translate_ollama_strict_appends_directive(self, mock_chat):
+        """strict=True must append an aggressive anti-echo directive to the prompt."""
+        mock_chat.return_value = {'message': {'content': '{"translation": "Hola"}'}}
+        self.mock_time.side_effect = [1.0, 2.0]
+        text, latency = translator.translate_ollama(
+            "Hello world", "English", "Spanish", [], strict=True
+        )
+        self.assertEqual(text, "Hola")
+        prompt = mock_chat.call_args.kwargs['messages'][0]['content']
+        self.assertIn("STRICT RETRY", prompt)
+        self.assertIn("echo", prompt.lower())
+
+    @patch('src.translator.translate_ollama')
+    def test_process_translation_task_same_language_emits_skipped(self, mock_translate_ollama):
+        """A FINAL task that is genuinely ambiguous after direction-swap must
+        still emit a terminal 'skipped' event — never a silent return."""
+        # Text with markers of BOTH languages (rare ambiguity) keeps firing the
+        # same-language guard even after swap.
+        mock_translate_ollama.return_value = (None, 0.0)
+        ui_queue = MagicMock()
+        translator.process_translation_task(
+            ("el banco the account", "en"), ["Context"], ui_queue, {"audio_start": 0.5}
+        )
+        mock_translate_ollama.assert_called_once()
+        msg = ui_queue.put.call_args[0][0]
+        self.assertIn(msg["type"], ("skipped", "error"))
 
     @patch('src.translator.translate_ollama', return_value=(None, 1.0))
     def test_process_translation_task_failure_emits_error(self, mock_translate_ollama):

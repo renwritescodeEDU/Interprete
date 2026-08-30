@@ -35,6 +35,12 @@ MIN_AUTO_COMMIT_SECONDS = 3.0
 MIN_SMART_CHUNK_SECONDS = 8.0
 SMART_SILENCE_SECONDS = 0.45
 MAX_SMART_CHUNK_SECONDS = 15.0
+# Minimum residual audio (seconds) worth pushing as a final AFTER an
+# auto-commit. Without this, a few frames of speech/ambient noise captured
+# between the commit and the Stop click produce a near-empty final; the
+# transcriber then emits a spurious 'no_speech' cancel that overwrites the
+# good translation already displayed in the UI (observed in Phase 9 logs).
+MIN_RESIDUAL_SECONDS = 0.5
 
 # Host API preference for deduplication on Windows. PortAudio exposes the same
 # physical device once per host API (MME, DirectSound, WASAPI, WDM-KS). WASAPI
@@ -441,11 +447,21 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                     _drain_queue(asr_queue)
 
                     if frames and (segment_has_speech or not auto_committed_in_recording):
-                        audio_array = _process_audio_frames(frames, actual_rate)
-                        _push_final(
-                            asr_queue, final_queue, audio_array, timing,
-                            note=f": {len(frames)} frames ({len(audio_array)} samples, {recording_duration:.2f}s)",
-                        )
+                        residual_seconds = len(frames) * buffer_size / actual_rate
+                        if auto_committed_in_recording and residual_seconds < MIN_RESIDUAL_SECONDS:
+                            # Tiny residual (a few frames) after an auto-commit:
+                            # the real content was already committed, and pushing
+                            # this tail would trigger a spurious no_speech cancel.
+                            logger.info(
+                                f"[AUDIO] Discarding tiny residual ({residual_seconds:.2f}s) "
+                                f"after auto-commit — content already committed."
+                            )
+                        else:
+                            audio_array = _process_audio_frames(frames, actual_rate)
+                            _push_final(
+                                asr_queue, final_queue, audio_array, timing,
+                                note=f": {len(frames)} frames ({len(audio_array)} samples, {recording_duration:.2f}s)",
+                            )
                     elif not auto_committed_in_recording:
                         # Empty recording with no auto-commits: preserve the
                         # original empty-final (transcriber emits a cancel).

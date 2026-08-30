@@ -240,19 +240,19 @@ def _build_rules(target_lang: str) -> dict:
     if target_lang == "Spanish":
         return {
             "register_rule": 'REGISTER: Always use formal address. In Spanish: "usted/su/le/él/ella" NEVER "tú/tu/te". Example: "for you" → "para usted", never "para ti"; "you will need" → "necesitará", never "necesitarás". Use "su" (formal possessive), never "tu" or "tus".',
-            "completeness_rule": "COMPLETENESS: Translate EVERY word, including honorifics. Never omit the first or the last word of the utterance. If the source ends with English words such as 'X, help me out', keep that phrase unchanged at the end of the translation. Preserve numbers, dates, codes, and phone numbers unchanged.",
+            "completeness_rule": "COMPLETENESS: Translate EVERY word — verbs, nouns, adjectives, adverbs, articles, prepositions, honorifics — never omit any of them. Never omit the first or the last word of the utterance. If the source says something like 'I usually layer a vitamin C serum', the translation MUST express the layering action (e.g. 'aplico en capas un suero de vitamina C'), never drop it. If the source ends with English words such as 'X, help me out', keep that phrase unchanged at the end of the translation. Preserve numbers, dates, codes, and phone numbers unchanged.",
             "accuracy_rule": 'ACCURACY: Translate compound terms correctly. Examples: mother-in-law=suegra, checking account=cuenta corriente, child support=manutención de menores, food stamps=cupones de alimento (SNAP), alley=callejón, dumpster=contenedor de basura, non-payment=falta de pago / impago, ma\'am=señora, bills=facturas (nunca "billas"), on point=preciso/exacto (nunca "en punto" para este sentido). Format monetary amounts as $X,XXX.XX (e.g. "$53.52", never "$53 with 52 cents").',
             "acronym_rule": "ACRONYMS: First use → expand with Spanish meaning in parentheses. Example: APR → TAP (Tasa Anual de Porcentaje).",
-            "orthography_rule": 'ORTHOGRAPHY: Use correct Spanish spelling, tildes, and punctuation. Questions must open with ¿ and close with ?. Never replace "é" or "í" with "ñ" — the letter ñ appears only in words like señor, mañana, niño, año. Never add spurious accents to vowels (write "número", not "nùmero"; write "tuve", not "tuví").',
+            "orthography_rule": 'ORTHOGRAPHY: Use correct Spanish spelling, tildes, and punctuation. Questions must open with ¿ and close with ?. Never replace "é" or "í" with "ñ" — the letter ñ appears only in words like señor, mañana, niño, año. Never add spurious accents to vowels (write "número", not "nùmero"; write "tuve", not "tuví"). Do NOT invent words — write "crítica", never "crótica"; "apuro", never "apurrido"; "precisión", never "precisíon". Match gender and number: "de la temporada", never "del temporada".',
             "pronoun_resolution_rule": "PRONOUNS: Keep the speaker's perspective. English 'your' → 'su' (formal) only when addressing the listener directly; 'his' → 'su' when referring to a third person. English 'send me' → 'me envíe' (first person), never 'le envíe'. Do not add or drop pronouns.",
         }
     # target_lang == "English"
     return {
         "register_rule": 'REGISTER: Use formal address consistently. Render quoted Spanish forms as "usted/su/le/él/ella"; the translated output must remain in English.',
-        "completeness_rule": "COMPLETENESS: Translate EVERY word, including honorifics (señora = ma'am, señor = sir, don = Mr.). Never omit the first or the last word of the utterance. If the source ends with English words such as 'X, help me out', keep that phrase unchanged at the end of the translation. Preserve numbers, dates, codes, and phone numbers unchanged.",
+        "completeness_rule": "COMPLETENESS: Translate EVERY word — verbs, nouns, adjectives, adverbs, articles, prepositions, honorifics — never omit any of them. Never omit the first or the last word of the utterance. If the source says something like 'suelo aplicar un suero de vitamina C en capas', the translation MUST express the layering action (e.g. 'I usually layer a vitamin C serum'), never drop it. If the source ends with English words such as 'X, help me out', keep that phrase unchanged at the end of the translation. Preserve numbers, dates, codes, and phone numbers unchanged.",
         "accuracy_rule": "ACCURACY: Translate compound terms correctly. Examples: suegra=mother-in-law, cuenta corriente=checking account, manutención de menores=child support, cupones de alimento=food stamps (SNAP), callejón=alley, contenedor de basura=dumpster, falta de pago / impago=non-payment, señora=ma'am.",
         "acronym_rule": "ACRONYMS: Translate acronyms to their English equivalent. First use → expand with English meaning in parentheses. Example: TAP → APR (Annual Percentage Rate).",
-        "orthography_rule": 'ORTHOGRAPHY: Use standard English spelling. Contractions must use correct apostrophe placement (e.g. "ma\'am" not "maam" or "maám"; "don\'t" not "dont").',
+        "orthography_rule": 'ORTHOGRAPHY: Use standard English spelling. Contractions must use correct apostrophe placement (e.g. "ma\'am" not "maam" or "maám"; "don\'t" not "dont"). Do NOT invent words — write "niacinamide", never "niacinaamida".',
             "pronoun_resolution_rule": 'PRONOUNS: Spanish "su" is ambiguous (his/her/your/their). Resolve it from the referent introduced in the same sentence. If the clause subject is "él" (he), "su" = "his"; if "ella" (she), "su" = "her". Example: "él me preguntó si sabía su nombre" → "he asked me if I knew his name", never "your name". CONSISTENCY: All occurrences of "su/sus" in the same sentence refer to the same person — keep the SAME English possessive (your/his/her) for all of them. Example: "además de su esposo, sus dos hijos y su suegra" → "in addition to your husband, your two children and your mother-in-law".',
     }
 
@@ -322,8 +322,12 @@ def _validate_translation(source: str, translation: str) -> bool:
 
 def translate_ollama(text: str, source_lang: str, target_lang: str,
                      context_history: list, glossary_manager=None,
-                     speaker_note: str = "Unknown speaker.") -> tuple:
+                     speaker_note: str = "Unknown speaker.",
+                     strict: bool = False) -> tuple:
     """Translates text using the Ollama local LLM with glossary-enhanced prompts.
+
+    When ``strict=True`` an aggressive anti-echo directive is appended to the
+    prompt (used for the echo-retry contingency).
 
     Returns (None, latency) on any failure — invalid JSON, unexpected shape,
     or implausible output. Callers must treat None as an error, never as text.
@@ -376,6 +380,15 @@ def translate_ollama(text: str, source_lang: str, target_lang: str,
         text=text,
         **_build_rules(target_lang)
     )
+    if strict:
+        # Aggressive anti-echo directive for the echo-retry contingency.
+        prompt += (
+            f"\n\nSTRICT RETRY: You MUST translate the text into {target_lang}. "
+            f"DO NOT echo the source text. DO NOT repeat the source language. "
+            f"If you output the source language, the interpretation fails. "
+            f"Translate every word — no omissions. "
+            f"Output ONLY valid JSON with key 'translation'."
+        )
     response = None
     try:
         response = ollama.chat(
@@ -710,11 +723,25 @@ def process_translation_task(task: tuple, context_history: list,
     logger.info(f"[TRANSLATOR] Task received: {lang} -> {target_lang}, {len(text)} chars")
 
     try:
-        # Guard: if the text is already in the target language, skip translation
+        # Guard: if the text is already in the target language, the ASR
+        # language detection was likely wrong. Contingency: swap directions
+        # and re-evaluate. If the text also looks like the (new) target,
+        # genuinely ambiguous — emit skipped (should be rare).
         if _detect_same_language(text, target_lang):
-            logger.info(f"[TRANSLATOR] Skipping re-translation — text already in {target_lang}: '{text}'")
-            _put_ui(ui_queue, ui_skipped("same_language", original=text))
-            return
+            logger.warning(
+                f"[TRANSLATOR] ASR language '{lang}' conflicts with text — "
+                f"text already looks like {target_lang}. Swapping direction "
+                f"({source_lang} ↔ {target_lang}) as contingency."
+            )
+            source_lang, target_lang = target_lang, source_lang
+            lang = "es" if target_lang == "Spanish" else "en"
+            if _detect_same_language(text, target_lang):
+                logger.info(
+                    f"[TRANSLATOR] Still ambiguous after swap — "
+                    f"skipping re-translation: '{text}'"
+                )
+                _put_ui(ui_queue, ui_skipped("same_language", original=text))
+                return
 
         timing["translation_start"] = time.time()
 
@@ -736,15 +763,31 @@ def process_translation_task(task: tuple, context_history: list,
         ollama_translation = _restore_honorific(text, ollama_translation, target_lang)
 
         # Output-language guard: smaller models may echo the source text.
-        # If the output still looks like the SOURCE language, reject it —
-        # showing the source text as a "translation" is worse than an error.
+        # Contingency: retry ONCE with a strict prompt before giving up.
         if _detect_same_language(ollama_translation, source_lang):
-            logger.error(
-                f"[TRANSLATOR] Rejected output still in source language ({source_lang}). "
-                f"Full output: '{ollama_translation}'"
+            logger.warning(
+                f"[TRANSLATOR] Output still in source language ({source_lang}) — "
+                f"retrying with strict prompt. First output: '{ollama_translation}'"
             )
-            _put_ui(ui_queue, ui_error(f"Translation output was not in {target_lang}."))
-            return
+            ollama_translation, ollama_time = translate_ollama(
+                text, source_lang, target_lang, context_history,
+                glossary_manager=glossary_manager,
+                speaker_note=speaker_note, strict=True
+            )
+            if ollama_translation is None:
+                logger.error(
+                    "[TRANSLATOR] Strict retry failed — no result from Ollama."
+                )
+                _put_ui(ui_queue, ui_error("Translation failed. Check that Ollama is running."))
+                return
+            ollama_translation = _restore_honorific(text, ollama_translation, target_lang)
+            if _detect_same_language(ollama_translation, source_lang):
+                logger.error(
+                    f"[TRANSLATOR] Strict retry still echoed the source language. "
+                    f"Full output: '{ollama_translation}'"
+                )
+                _put_ui(ui_queue, ui_error(f"Translation output was not in {target_lang}."))
+                return
 
         # Deterministic post-processing: orthography, proper names, trailing
         # English phrases — applied before delivery and history recording.
