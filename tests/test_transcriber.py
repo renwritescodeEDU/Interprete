@@ -2,7 +2,7 @@ import queue
 import unittest
 from unittest.mock import MagicMock, patch
 
-from src.transcriber import _send_to_queue, start_transcriber
+from src.transcriber import TRANSCRIBE_INITIAL_PROMPT, _send_to_queue, start_transcriber
 
 class TestTranscriber(unittest.TestCase):
     def setUp(self):
@@ -408,9 +408,12 @@ class TestBilingualPrompt(unittest.TestCase):
         self.assertEqual(kwargs["initial_prompt"], TRANSCRIBE_INITIAL_PROMPT)
 
     @patch("src.transcriber.WhisperModel")
-    def test_final_transcribe_has_no_initial_prompt(self, mock_whisper):
-        """Final chunks must NOT receive an initial prompt (avoids whisper
-        hallucinating the prompt text when the audio is silent)."""
+    def test_final_transcribe_chains_previous_final(self, mock_whisper):
+        """Final chunks must receive an initial prompt that includes the text
+        of the previous final, so Whisper keeps the thread of the conversation
+        (context chaining, Phase 8.2)."""
+        import threading
+        import time
         mock_model = MagicMock()
         mock_whisper.return_value = mock_model
         mock_seg = MagicMock()
@@ -424,14 +427,86 @@ class TestBilingualPrompt(unittest.TestCase):
         asr_q = queue.Queue()
         tr_q = queue.Queue()
         ui_q = queue.Queue()
-        asr_q.put((b"audio_data", 16000, True))
-        asr_q.put("QUIT")
-        start_transcriber(asr_q, tr_q, ui_q)
 
-        call_kwargs = mock_model.transcribe.call_args
-        kwargs = call_kwargs[1] if len(call_kwargs) > 1 else {}
-        self.assertIsNone(kwargs.get("initial_prompt"),
-                          "final must not pass initial_prompt")
+        t = threading.Thread(target=start_transcriber, args=(asr_q, tr_q, ui_q))
+        t.start()
+
+        def wait_for_calls(n, timeout=5.0):
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                if len(mock_model.transcribe.call_args_list) >= n:
+                    return
+                time.sleep(0.05)
+            raise AssertionError(
+                f"expected {n} transcribe calls, got {len(mock_model.transcribe.call_args_list)}"
+            )
+
+        # Feed finals progressively: a final queued while the previous one is
+        # still being processed is drained as a stale partial, so wait between.
+        asr_q.put((b"audio_data_1", 16000, True))
+        wait_for_calls(1)
+        asr_q.put((b"audio_data_2", 16000, True))
+        wait_for_calls(2)
+        asr_q.put("QUIT")
+        t.join(timeout=5.0)
+        self.assertFalse(t.is_alive(), "transcriber thread did not exit")
+
+        calls = mock_model.transcribe.call_args_list
+        self.assertGreaterEqual(len(calls), 2)
+        # First final: no prior context -> plain bilingual prompt.
+        first_kwargs = calls[0][1]
+        self.assertEqual(first_kwargs["initial_prompt"], TRANSCRIBE_INITIAL_PROMPT)
+        # Second final: previous final text chained into the prompt.
+        second_kwargs = calls[1][1]
+        self.assertIsNotNone(second_kwargs.get("initial_prompt"),
+                             "second final must receive a chained prompt")
+        self.assertIn("Hello world", second_kwargs["initial_prompt"])
+
+    @patch("src.transcriber.WhisperModel")
+    def test_partial_transcribe_chains_previous_final(self, mock_whisper):
+        """Partial chunks after a final must also carry the previous final's
+        text as context."""
+        import threading
+        import time
+        mock_model = MagicMock()
+        mock_whisper.return_value = mock_model
+        mock_seg = MagicMock()
+        mock_seg.text = "Hello world"
+        mock_info = MagicMock()
+        mock_info.language = "en"
+        mock_info.language_probability = 0.95
+        mock_model.transcribe.return_value = ([mock_seg], mock_info)
+
+        from src.transcriber import start_transcriber
+        asr_q = queue.Queue()
+        tr_q = queue.Queue()
+        ui_q = queue.Queue()
+
+        t = threading.Thread(target=start_transcriber, args=(asr_q, tr_q, ui_q))
+        t.start()
+
+        def wait_for_calls(n, timeout=5.0):
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                if len(mock_model.transcribe.call_args_list) >= n:
+                    return
+                time.sleep(0.05)
+            raise AssertionError(
+                f"expected {n} transcribe calls, got {len(mock_model.transcribe.call_args_list)}"
+            )
+
+        asr_q.put((b"audio_data_1", 16000, True))
+        wait_for_calls(1)
+        asr_q.put((b"audio_data_2", 16000, False))
+        wait_for_calls(2)
+        asr_q.put("QUIT")
+        t.join(timeout=5.0)
+        self.assertFalse(t.is_alive(), "transcriber thread did not exit")
+
+        calls = mock_model.transcribe.call_args_list
+        self.assertGreaterEqual(len(calls), 2)
+        second_kwargs = calls[1][1]
+        self.assertIn("Hello world", second_kwargs["initial_prompt"])
 
 
 if __name__ == "__main__":

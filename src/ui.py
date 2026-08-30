@@ -92,6 +92,12 @@ class MainWindow(QMainWindow):
         self._workers_dead = False
         self._health_misses = 0
         self._shutting_down = False
+        # Live recording-session bubble (Phase 8.2): auto-commit fragments are
+        # appended to ONE bubble per recording session, giving the illusion of
+        # a single continuous paragraph.
+        self._live_bubble = None
+        self._live_orig = ""
+        self._live_trans = ""
 
         self._setup_ui()
         self._center_on_screen()
@@ -469,6 +475,11 @@ class MainWindow(QMainWindow):
 
     def _reset_ui_state(self, is_error=False):
         """Deduplicates common UI reset code."""
+        # Close the live recording-session bubble (if any): the next recording
+        # starts a fresh paragraph.
+        self._live_bubble = None
+        self._live_orig = ""
+        self._live_trans = ""
         if not is_error:
             self.current_label.hide()
             self.current_label.setText("")
@@ -489,6 +500,14 @@ class MainWindow(QMainWindow):
             self._maybe_show_audio_waiting()
 
     def _add_to_history(self, original: str, translated: str, latency: float = 0.0):
+        self._create_bubble(original, translated)
+
+    def _create_bubble(self, original: str, translated: str):
+        """Create a history bubble and return its (original, translated) labels.
+
+        Shared by _add_to_history (one-shot bubbles) and the live recording
+        session bubble, which appends text instead of creating a new bubble.
+        """
         # Cap history to bound memory growth on long sessions
         while self.history_layout.count() >= MAX_HISTORY:
             oldest = self.history_layout.takeAt(0)
@@ -516,7 +535,31 @@ class MainWindow(QMainWindow):
         bubble_layout.addWidget(lbl_orig)
         bubble_layout.addWidget(lbl_trans)
         self.history_layout.addWidget(bubble)
+        self._scroll_history_to_bottom()
+        return lbl_orig, lbl_trans
+
+    def _scroll_history_to_bottom(self):
         QTimer.singleShot(50, lambda: self.scroll_area.verticalScrollBar().setValue(self.scroll_area.verticalScrollBar().maximum()))
+
+    def _append_to_live_bubble(self, original: str, translated: str):
+        """Append an auto-commit fragment to the single live recording-session
+        bubble (one continuous paragraph), creating it on first fragment."""
+        if self._live_orig:
+            self._live_orig = f"{self._live_orig} {original}"
+        else:
+            self._live_orig = original
+        if self._live_trans:
+            self._live_trans = f"{self._live_trans} {translated}"
+        else:
+            self._live_trans = translated
+
+        if self._live_bubble is None:
+            self._live_bubble = self._create_bubble(self._live_orig, self._live_trans)
+        else:
+            lbl_orig, lbl_trans = self._live_bubble
+            lbl_orig.setText(self._live_orig)
+            lbl_trans.setText(self._live_trans)
+            self._scroll_history_to_bottom()
 
     def _log_message(self, original: str, translated: str, timing: dict = None):
         if not self.log_path:
@@ -681,21 +724,26 @@ class MainWindow(QMainWindow):
                 f"TOTAL (stop->display): {total:.3f}s {status_tag}"
             )
 
-        self._add_to_history(original, translated, latency)
         self._log_message(original, translated, timing)
         logger.info(f"[UI] Translation displayed ({len(translated)} chars): '{translated}'")
         if self.is_recording:
-            # Auto-committed segment mid-recording: show the translation
-            # in the preview label but keep the recording state (button,
-            # current transcript) untouched — the next partial/final from
-            # the new segment will overwrite it.
+            # Auto-committed segment mid-recording: append to the single live
+            # paragraph bubble instead of creating a new one; keep the
+            # recording state (button, current transcript) untouched.
+            self._append_to_live_bubble(original, translated)
             self.current_label.show()
-            self.current_label.setText(f"{original}\n→ {translated}")
+            self.current_label.setText(f"{self._live_trans}")
             self.current_label.setStyleSheet(
                 "color: #D1FAE5; font-size: 18px; padding: 16px; "
                 "background-color: #064E3B; border: 1px solid #047857; border-radius: 8px;"
             )
             return
+        # STOP: the last fragment appends to the live paragraph if auto-commits
+        # happened during this recording; otherwise a fresh one-shot bubble.
+        if self._live_bubble is not None:
+            self._append_to_live_bubble(original, translated)
+        else:
+            self._add_to_history(original, translated, latency)
         self._reset_ui_state()
 
     def _handle_cancel(self, item):

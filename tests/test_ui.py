@@ -437,11 +437,13 @@ class TestMainWindow(unittest.TestCase):
     def test_translation_while_recording_keeps_button(self):
         """A translation event arriving mid-recording (auto-commit) must NOT
         reset the UI state — the button must stay 'Stop Recording', the
-        translation must appear in current_label, and history must be updated."""
+        translation must appear in current_label, and the bubble must be
+        created in the history panel (not via _add_to_history)."""
         self.window.is_recording = True
         self.window.action_btn.setText("Stop Recording")
         self.window.current_label.show()
         self.window.current_label.setText("Original transcript...")
+        initial_count = self.window.history_layout.count()
 
         with patch.object(self.window, '_reset_ui_state') as mock_reset, \
              patch.object(self.window, '_add_to_history') as mock_history, \
@@ -454,11 +456,83 @@ class TestMainWindow(unittest.TestCase):
             self.window.poll_queue()
 
         mock_reset.assert_not_called()
-        mock_history.assert_called_once_with("hello world", "hola mundo", 1.5)
+        mock_history.assert_not_called()
         mock_log.assert_called_once()
         self.assertEqual(self.window.action_btn.text(), "Stop Recording",
                          "mid-recording translation must not flip the button to Start")
         self.assertIn("hola mundo", self.window.current_label.text())
+        # The bubble must be created in the history panel
+        self.assertEqual(self.window.history_layout.count(), initial_count + 1)
+
+    def test_translation_appends_to_live_bubble(self):
+        """Two auto-commit fragments mid-recording must concatenate into ONE
+        history bubble (space-separated), not two separate bubbles."""
+        self.window.is_recording = True
+        self.window.action_btn.setText("Stop Recording")
+        initial_count = self.window.history_layout.count()
+
+        self.ui_queue.get_nowait.side_effect = [
+            {"type": "translation", "original": "hello world",
+             "translated": "hola mundo", "latency": 1.5, "timing": {}},
+            {"type": "translation", "original": "how are you",
+             "translated": "cómo estás", "latency": 1.2, "timing": {}},
+            queue.Empty,
+        ]
+        self.window.poll_queue()
+
+        self.assertEqual(self.window.history_layout.count(), initial_count + 1,
+                         "must be exactly one bubble, not two")
+        item = self.window.history_layout.itemAt(initial_count)
+        labels = item.widget().findChildren(QLabel)
+        orig_text = labels[0].text()
+        trans_text = labels[1].text()
+        self.assertEqual(orig_text, "hello world how are you")
+        self.assertEqual(trans_text, "hola mundo cómo estás")
+
+    def test_translation_after_stop_continues_live_bubble(self):
+        """A mid-recording fragment followed by a STOP fragment must produce
+        ONE bubble containing both fragments."""
+        self.window.is_recording = True
+        self.window.action_btn.setText("Stop Recording")
+        initial_count = self.window.history_layout.count()
+
+        self.ui_queue.get_nowait.side_effect = [
+            {"type": "translation", "original": "hello world",
+             "translated": "hola mundo", "latency": 1.5, "timing": {}},
+            queue.Empty,
+        ]
+        self.window.poll_queue()
+        self.assertEqual(self.window.history_layout.count(), initial_count + 1)
+
+        # Now STOP: the final fragment must append to the same bubble
+        self.window.is_recording = False
+        self.ui_queue.get_nowait.side_effect = [
+            {"type": "translation", "original": "how are you",
+             "translated": "cómo estás", "latency": 1.2, "timing": {}},
+            queue.Empty,
+        ]
+        self.window.poll_queue()
+
+        self.assertEqual(self.window.history_layout.count(), initial_count + 1,
+                         "STOP must not create a second bubble — append to live one")
+        item = self.window.history_layout.itemAt(initial_count)
+        labels = item.widget().findChildren(QLabel)
+        self.assertEqual(labels[0].text(), "hello world how are you")
+        self.assertEqual(labels[1].text(), "hola mundo cómo estás")
+
+    def test_translation_after_stop_fresh_bubble(self):
+        """Without any mid-recording auto-commits, a STOP translation creates
+        a fresh bubble via _add_to_history (existing behaviour preserved)."""
+        self.window.is_recording = False
+        with patch.object(self.window, '_add_to_history') as mock_history:
+            self.ui_queue.get_nowait.side_effect = [
+                {"type": "translation", "original": "hello world",
+                 "translated": "hola mundo", "latency": 1.5, "timing": {}},
+                queue.Empty,
+            ]
+            self.window.poll_queue()
+        mock_history.assert_called_once_with("hello world", "hola mundo", 1.5)
+
 
 if __name__ == '__main__':
     unittest.main()

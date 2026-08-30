@@ -20,19 +20,21 @@ MAX_RECORDING_MINUTES = 5
 # Keeps the system in a non-crashing "waiting" state until a microphone
 # (or virtual audio device) becomes available.
 DEVICE_RETRY_INTERVAL = 2.0
-# Auto-commit by silence/time (Phase 8/8.1): when the speaker pauses for
-# SILENCE_COMMIT_SECONDS during an ongoing recording, the accumulated audio
-# is treated as a final segment and translated immediately — the user no
-# longer waits for the Stop button on long utterances. Segments shorter
-# than MIN_AUTO_COMMIT_SECONDS are never committed (protects interjections
-# and mid-thought pauses from being cut mid-sentence). MAX_AUTO_COMMIT_SECONDS
-# is the hard ceiling: a segment is committed the moment it reaches that
-# duration regardless of silence, so a Stop after a long manual recording
-# only ever needs to translate the trailing sub-segment (SLA guarantee).
+# Smart breath-chunking (Phase 8.2): auto-commit so the user never waits for
+# Stop on long utterances, WITHOUT ever cutting mid-word.
+#   - SILENCE_COMMIT_SECONDS: a long pause after speech = turn ended.
+#   - MIN_AUTO_COMMIT_SECONDS: never commit tiny fragments.
+#   - MIN_SMART_CHUNK_SECONDS + SMART_SILENCE_SECONDS: after 8 s of audio,
+#     commit at the first micro-pause (0.45 s — a breath/comma boundary),
+#     guaranteeing words are never split.
+#   - MAX_SMART_CHUNK_SECONDS: hard safety ceiling (15 s) only for continuous
+#     speech with no pause at all (e.g. someone shouting for 15 s straight).
 SILENCE_RMS_THRESHOLD = 0.005
 SILENCE_COMMIT_SECONDS = 1.0
 MIN_AUTO_COMMIT_SECONDS = 3.0
-MAX_AUTO_COMMIT_SECONDS = 12.0
+MIN_SMART_CHUNK_SECONDS = 8.0
+SMART_SILENCE_SECONDS = 0.45
+MAX_SMART_CHUNK_SECONDS = 15.0
 
 # Host API preference for deduplication on Windows. PortAudio exposes the same
 # physical device once per host API (MME, DirectSound, WASAPI, WDM-KS). WASAPI
@@ -551,29 +553,38 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
 
                 segment_seconds = len(frames) * buffer_size / actual_rate
                 silence_seconds = silence_frames * buffer_size / actual_rate
-                # Two triggers: a trailing silence (breathing pause) OR the
-                # hard 12 s ceiling. The max-duration rule ignores silence so a
-                # long manual recording never delivers more than ~12 s in the
-                # final buffer at Stop time (SLA < 2.5 s). Empty segments (no
-                # speech at all) are never committed — Stop handles those.
-                max_duration_hit = (segment_has_speech
-                                    and segment_seconds >= MAX_AUTO_COMMIT_SECONDS)
-                silence_hit = (segment_has_speech
-                               and segment_seconds >= MIN_AUTO_COMMIT_SECONDS
-                               and silence_seconds >= SILENCE_COMMIT_SECONDS)
-                if max_duration_hit or silence_hit:
+                # Smart breath-chunking triggers, checked in order of intent:
+                # 1) micro-pause (breath/comma) after >= 8 s — the word-safe
+                #    chunk boundary;
+                # 2) long pause after >= 3 s — the turn ended;
+                # 3) hard safety ceiling (15 s) — continuous speech with no
+                #    pause at all. Never a blind cut at a fixed 12 s.
+                micro_pause_hit = (segment_has_speech
+                                   and segment_seconds >= MIN_SMART_CHUNK_SECONDS
+                                   and silence_seconds >= SMART_SILENCE_SECONDS)
+                turn_end_hit = (segment_has_speech
+                                and segment_seconds >= MIN_AUTO_COMMIT_SECONDS
+                                and silence_seconds >= SILENCE_COMMIT_SECONDS)
+                safety_hit = (segment_has_speech
+                              and segment_seconds >= MAX_SMART_CHUNK_SECONDS)
+                if micro_pause_hit or turn_end_hit or safety_hit:
                     audio_array = _process_audio_frames(frames, actual_rate)
                     commit_timing = {
                         "recording_start": recording_start_ts,
                         "recording_stop": time.time(),
                     }
-                    if max_duration_hit:
+                    if micro_pause_hit:
                         logger.info(
-                            f"[AUDIO] Auto-commit by max duration "
-                            f"({MAX_AUTO_COMMIT_SECONDS:.0f}s) at {segment_seconds:.2f}s of audio."
+                            f"[AUDIO] Auto-commit by micro-pause at "
+                            f"{segment_seconds:.2f}s of audio (breath boundary)."
                         )
-                    else:
+                    elif turn_end_hit:
                         logger.info(f"[AUDIO] Auto-commit by silence at {segment_seconds:.2f}s of audio.")
+                    else:
+                        logger.info(
+                            f"[AUDIO] Auto-commit by safety ceiling "
+                            f"({MAX_SMART_CHUNK_SECONDS:.0f}s) at {segment_seconds:.2f}s of audio."
+                        )
                     _push_final(
                         asr_queue, final_queue, audio_array, commit_timing,
                         note=f" (auto-commit): {len(frames)} frames ({len(audio_array)} samples, {segment_seconds:.2f}s)",

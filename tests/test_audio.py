@@ -569,16 +569,16 @@ class TestAutoCommit(unittest.TestCase):
         self.assertEqual(len(post_finals), 0,
                          f"FINISH with residual silence should not add finals; got {len(post_finals)}")
 
-    def test_audio_auto_commit_max_duration(self):
-        """Continuous speech with no pauses must be committed by the 12 s
-        ceiling (SLA: Stop never leaves more than ~12 s in the final buffer)."""
+    def test_audio_auto_commit_safety_ceiling(self):
+        """Continuous speech with no pauses must be committed by the hard
+        15 s safety ceiling (never earlier — no blind 12 s cut)."""
         asr_queue = queue.Queue()
         control_queue = queue.Queue()
         start_ts = time.time()
         control_queue.put(("START", start_ts))
 
         t = threading.Thread(target=self._run_capture, args=(
-            self._reader((400, 0)), start_ts, control_queue, asr_queue))
+            self._reader((500, 0)), start_ts, control_queue, asr_queue))
         t.start()
 
         commit = None
@@ -594,15 +594,89 @@ class TestAutoCommit(unittest.TestCase):
         control_queue.put("QUIT")
         t.join(timeout=5.0)
         self.assertFalse(t.is_alive(), "capture thread did not exit")
-        self.assertIsNotNone(commit, "max-duration auto-commit never emitted")
+        self.assertIsNotNone(commit, "safety-ceiling auto-commit never emitted")
 
         audio_array, rate, is_final, timing = commit
         self.assertTrue(is_final)
-        # 400 frames × 480 samples = exactly 12 s at 16 kHz — the commit must
-        # fire the moment the ceiling is crossed, without waiting for silence.
-        self.assertEqual(len(audio_array), 400 * 480,
-                         f"max-duration commit must contain 12 s of audio, got {len(audio_array)} samples")
+        # 500 frames × 480 samples = exactly 15 s at 16 kHz — the safety
+        # ceiling fires the moment it is crossed (continuous speech, no pause).
+        self.assertEqual(len(audio_array), 500 * 480,
+                         f"safety ceiling must commit at 15 s, got {len(audio_array)} samples")
         self.assertGreaterEqual(timing["recording_stop"], timing["recording_start"])
+
+    def test_audio_smart_chunk_commits_at_micro_pause(self):
+        """A micro-pause (0.45 s) after >= 8 s of speech must trigger the
+        auto-commit — the chunk ends at a breath boundary, not mid-word."""
+        asr_queue = queue.Queue()
+        control_queue = queue.Queue()
+        start_ts = time.time()
+        control_queue.put(("START", start_ts))
+
+        # 280 speech frames (8.4 s) + 40 silence frames (1.2 s): the micro
+        # pause begins at 8.4 s; the commit must fire ~0.45 s into it, i.e.
+        # at 280 + 15 = 295 frames, NOT at 400 (no blind 12 s cut).
+        t = threading.Thread(target=self._run_capture, args=(
+            self._reader((280, 40)), start_ts, control_queue, asr_queue))
+        t.start()
+
+        commit = None
+        deadline = time.time() + 8.0
+        while time.time() < deadline:
+            try:
+                item = asr_queue.get_nowait()
+                if isinstance(item, tuple) and len(item) == 4 and item[2] is True:
+                    commit = item
+                    break
+            except queue.Empty:
+                time.sleep(0.05)
+        control_queue.put("QUIT")
+        t.join(timeout=5.0)
+        self.assertFalse(t.is_alive(), "capture thread did not exit")
+        self.assertIsNotNone(commit, "smart micro-pause commit never emitted")
+
+        audio_array, rate, is_final, timing = commit
+        self.assertTrue(is_final)
+        # 280 speech + 15 silence frames = 295 frames = 8.85 s of audio —
+        # committed at the micro-pause, well before the old 12 s blind cut.
+        self.assertEqual(len(audio_array), 295 * 480,
+                         f"expected commit at 295 frames (micro-pause), got {len(audio_array)} samples")
+
+    def test_audio_no_blind_cut_at_12s(self):
+        """Continuous speech must NOT be cut at 12 s — a chunk is committed
+        only at a micro-pause or the 15 s safety ceiling."""
+        asr_queue = queue.Queue()
+        control_queue = queue.Queue()
+        start_ts = time.time()
+        control_queue.put(("START", start_ts))
+
+        # 400 speech frames (12 s) with NO pause inside: the old 8.1 logic
+        # committed at exactly 12 s. Now it must wait for the safety ceiling.
+        t = threading.Thread(target=self._run_capture, args=(
+            self._reader((400, 200)), start_ts, control_queue, asr_queue))
+        t.start()
+
+        commit = None
+        deadline = time.time() + 8.0
+        while time.time() < deadline:
+            try:
+                item = asr_queue.get_nowait()
+                if isinstance(item, tuple) and len(item) == 4 and item[2] is True:
+                    commit = item
+                    break
+            except queue.Empty:
+                time.sleep(0.05)
+        control_queue.put("QUIT")
+        t.join(timeout=5.0)
+        self.assertFalse(t.is_alive(), "capture thread did not exit")
+        self.assertIsNotNone(commit)
+
+        audio_array, rate, is_final, timing = commit
+        self.assertTrue(is_final)
+        # The chunk must contain MORE than 400 frames (12 s) — proving the
+        # blind cut was removed. Commit happens at the safety ceiling (500)
+        # or at the micro-pause after the speech (415).
+        self.assertGreater(len(audio_array) / 480, 400,
+                           f"blind 12 s cut still present; committed {len(audio_array)} samples")
 
 
 if __name__ == '__main__':

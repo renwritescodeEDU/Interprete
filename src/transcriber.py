@@ -146,6 +146,9 @@ def start_transcriber(
     # previews and for provisional translations while recording continues.
     provisional_text = ""
     last_provisional_sent_len = 0
+    # Text of the last transcribed final, chained as context for the next
+    # chunk so Whisper continues the sentence naturally (Phase 8.2).
+    last_final_text = None
 
     while True:
         try:
@@ -202,12 +205,13 @@ def start_transcriber(
 
             transcription_start = time.time()
 
-            # Determine initial prompt for partial chunks. A bilingual prompt
-            # forces Whisper to use correct punctuation in both languages
-            # without biasing toward one language. Finals skip the prompt to
-            # avoid hallucinating the prompt text when the audio is silent
-            # (observed: pure silence transcribed as "Hello, how are you?").
-            prompt = TRANSCRIBE_INITIAL_PROMPT if not is_final else None
+            # Determine initial prompt. A bilingual prompt forces Whisper to
+            # use correct punctuation in both languages. When a previous final
+            # exists, its text is chained as context so Whisper continues the
+            # sentence naturally across chunks (Phase 8.2).
+            prompt = TRANSCRIBE_INITIAL_PROMPT
+            if last_final_text:
+                prompt = f"{TRANSCRIBE_INITIAL_PROMPT}\n{last_final_text}"
 
             segments, info = model.transcribe(
                 audio_data,
@@ -297,6 +301,9 @@ def start_transcriber(
                     f"[TRANSCRIBER] Transcription completed in {transcription_elapsed:.3f}s "
                     f"({len(text)} chars): '{text}'"
                 )
+                # Chain this final's text as context for the next chunk so
+                # Whisper continues the sentence naturally (Phase 8.2).
+                last_final_text = text
 
                 # Propagate timing dict with transcription timestamps
                 timing["transcription_start"] = transcription_start
