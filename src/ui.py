@@ -3,6 +3,7 @@ import queue
 import sys
 import time
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from PyQt6.QtCore import Qt, QTimer, QPoint
 from PyQt6.QtGui import QGuiApplication, QMouseEvent
@@ -72,6 +73,39 @@ def _save_config(config):
     """Save preferences to disk (delegates to src.config)."""
     save_preferences(config, CONFIG_FILE)
 
+@dataclass
+class LiveBubbleState:
+    """Encapsulated state of the single live recording-session bubble.
+
+    Auto-commit fragments during one recording session are appended to ONE
+    bubble (a continuous paragraph). Replaces three previously-fragile
+    attributes (``_live_bubble`` / ``_live_orig`` / ``_live_trans``) with
+    a single dataclass, making the state transitions predictable.
+    """
+    labels: tuple | None = None
+    original: str = ""
+    translated: str = ""
+
+    @property
+    def active(self) -> bool:
+        return self.labels is not None
+
+    def append(self, original: str, translated: str) -> None:
+        if self.original:
+            self.original = f"{self.original} {original}"
+        else:
+            self.original = original
+        if self.translated:
+            self.translated = f"{self.translated} {translated}"
+        else:
+            self.translated = translated
+
+    def clear(self) -> None:
+        self.labels = None
+        self.original = ""
+        self.translated = ""
+
+
 class MainWindow(QMainWindow):
     def __init__(self, ui_queue: multiprocessing.Queue, control_queue: multiprocessing.Queue, stop_callback, log_path: str, health_check=None):
         super().__init__()
@@ -93,11 +127,10 @@ class MainWindow(QMainWindow):
         self._health_misses = 0
         self._shutting_down = False
         # Live recording-session bubble (Phase 8.2): auto-commit fragments are
-        # appended to ONE bubble per recording session, giving the illusion of
-        # a single continuous paragraph.
-        self._live_bubble = None
-        self._live_orig = ""
-        self._live_trans = ""
+        # appended to ONE bubble per recording session, replacing the previous
+        # three fragile attributes (_live_bubble / _live_orig / _live_trans)
+        # with a single encapsulated dataclass (Step 6).
+        self.live_bubble = LiveBubbleState()
 
         self._setup_ui()
         self._center_on_screen()
@@ -477,9 +510,7 @@ class MainWindow(QMainWindow):
         """Deduplicates common UI reset code."""
         # Close the live recording-session bubble (if any): the next recording
         # starts a fresh paragraph.
-        self._live_bubble = None
-        self._live_orig = ""
-        self._live_trans = ""
+        self.live_bubble.clear()
         if not is_error:
             self.current_label.hide()
             self.current_label.setText("")
@@ -544,21 +575,14 @@ class MainWindow(QMainWindow):
     def _append_to_live_bubble(self, original: str, translated: str):
         """Append an auto-commit fragment to the single live recording-session
         bubble (one continuous paragraph), creating it on first fragment."""
-        if self._live_orig:
-            self._live_orig = f"{self._live_orig} {original}"
+        bubble = self.live_bubble
+        bubble.append(original, translated)
+        if bubble.labels is None:
+            bubble.labels = self._create_bubble(bubble.original, bubble.translated)
         else:
-            self._live_orig = original
-        if self._live_trans:
-            self._live_trans = f"{self._live_trans} {translated}"
-        else:
-            self._live_trans = translated
-
-        if self._live_bubble is None:
-            self._live_bubble = self._create_bubble(self._live_orig, self._live_trans)
-        else:
-            lbl_orig, lbl_trans = self._live_bubble
-            lbl_orig.setText(self._live_orig)
-            lbl_trans.setText(self._live_trans)
+            lbl_orig, lbl_trans = bubble.labels
+            lbl_orig.setText(bubble.original)
+            lbl_trans.setText(bubble.translated)
             self._scroll_history_to_bottom()
 
     def _log_message(self, original: str, translated: str, timing: dict = None):
@@ -655,14 +679,11 @@ class MainWindow(QMainWindow):
         elif process == "translator" and status == "ollama_offline":
             self.sys_status_label.setText("Ollama offline")
             self.sys_status_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 14px; font-weight: 500;")
-            self.current_label.show()
-            self.current_label.setText(
+            self._show_current_label(
                 "<b>Ollama is not running.</b> Start Ollama (or install it from "
-                "https://ollama.com/download) — the app will recover automatically."
-            )
-            self.current_label.setStyleSheet(
-                f"color: {COLOR_ERROR}; font-size: 15px; padding: 16px; "
-                f"background-color: #450A0A; border: 1px solid #7F1D1D; border-radius: 8px;"
+                "https://ollama.com/download) — the app will recover automatically.",
+                "color: #EF4444; font-size: 15px; padding: 16px; "
+                "background-color: #450A0A; border: 1px solid #7F1D1D; border-radius: 8px;",
             )
         elif process == "translator" and status == "model_download":
             model = item.get("model", "the translation model")
@@ -674,20 +695,41 @@ class MainWindow(QMainWindow):
             self.sys_status_label.setText(f"Using fallback model {model}")
             self.sys_status_label.setStyleSheet(f"color: {COLOR_WARNING}; font-size: 14px; font-weight: 500;")
 
+    def _show_current_label(self, text: str, stylesheet: str):
+        """Single, predictable path for updating current_label.
+
+        All handlers go through this method so the label's visibility and
+        styling cannot drift between code paths (Step 6).
+        """
+        self.current_label.show()
+        self.current_label.setText(text)
+        self.current_label.setStyleSheet(stylesheet)
+
+    @staticmethod
+    def _style_translation() -> str:
+        return (
+            "color: #D1FAE5; font-size: 18px; padding: 16px; "
+            "background-color: #064E3B; border: 1px solid #047857; border-radius: 8px;"
+        )
+
     def _handle_partial(self, item):
         text = item.get("text", "")
         if text:
-            self.current_label.show()
-            self.current_label.setText(text)
-            self.current_label.setStyleSheet("color: #CBD5E1; font-size: 18px; padding: 16px; background-color: #1E293B; border: 1px solid #334155; border-radius: 8px;")
+            self._show_current_label(
+                text,
+                "color: #CBD5E1; font-size: 18px; padding: 16px; "
+                "background-color: #1E293B; border: 1px solid #334155; border-radius: 8px;",
+            )
             logger.debug(f"[UI] Partial transcript: '{text}'")
 
     def _handle_final(self, item):
         text = item.get("text", "")
         if text:
-            self.current_label.show()
-            self.current_label.setText(f"<i>{text}</i>")
-            self.current_label.setStyleSheet("color: #94A3B8; font-style: italic; font-size: 18px; padding: 16px; background-color: #1E293B; border: 1px solid #334155; border-radius: 8px;")
+            self._show_current_label(
+                f"<i>{text}</i>",
+                "color: #94A3B8; font-style: italic; font-size: 18px; padding: 16px; "
+                "background-color: #1E293B; border: 1px solid #334155; border-radius: 8px;",
+            )
             logger.info(f"[UI] Final transcript ({len(text)} chars): '{text}'")
 
     def _handle_provisional(self, item):
@@ -701,9 +743,10 @@ class MainWindow(QMainWindow):
         original = item.get("original", "")
         translated = item.get("translated", "")
         if translated:
-            self.current_label.show()
-            self.current_label.setText(f"{original}\n→ {translated}")
-            self.current_label.setStyleSheet("color: #D1FAE5; font-size: 18px; padding: 16px; background-color: #064E3B; border: 1px solid #047857; border-radius: 8px;")
+            self._show_current_label(
+                f"{original}\n→ {translated}",
+                self._style_translation(),
+            )
             logger.debug(f"[UI] Provisional translation: '{translated}'")
 
     def _handle_translation(self, item):
@@ -731,16 +774,11 @@ class MainWindow(QMainWindow):
             # paragraph bubble instead of creating a new one; keep the
             # recording state (button, current transcript) untouched.
             self._append_to_live_bubble(original, translated)
-            self.current_label.show()
-            self.current_label.setText(f"{self._live_trans}")
-            self.current_label.setStyleSheet(
-                "color: #D1FAE5; font-size: 18px; padding: 16px; "
-                "background-color: #064E3B; border: 1px solid #047857; border-radius: 8px;"
-            )
+            self._show_current_label(self.live_bubble.translated, self._style_translation())
             return
         # STOP: the last fragment appends to the live paragraph if auto-commits
         # happened during this recording; otherwise a fresh one-shot bubble.
-        if self._live_bubble is not None:
+        if self.live_bubble.active:
             self._append_to_live_bubble(original, translated)
         else:
             self._add_to_history(original, translated, latency)
@@ -752,20 +790,18 @@ class MainWindow(QMainWindow):
         if reason == "no_speech":
             # Genuine silence (VAD removed everything) — give the
             # user actionable feedback instead of a silent reset.
-            self.current_label.show()
-            self.current_label.setText(
+            self._show_current_label(
                 "<b>No speech detected.</b> Check that audio is "
                 "reaching the selected device (e.g. Stereo Mix / "
-                "virtual cable) and that something is playing."
+                "virtual cable) and that something is playing.",
+                "color: #F59E0B; font-size: 15px; padding: 16px; background-color: #451A03; border: 1px solid #92400E; border-radius: 8px;",
             )
-            self.current_label.setStyleSheet(f"color: {COLOR_WARNING}; font-size: 15px; padding: 16px; background-color: #451A03; border: 1px solid #92400E; border-radius: 8px;")
         elif reason == "empty_audio":
-            self.current_label.show()
-            self.current_label.setText(
+            self._show_current_label(
                 "<b>Empty recording.</b> No audio was captured — "
-                "check the microphone or virtual device."
+                "check the microphone or virtual device.",
+                "color: #EF4444; font-size: 15px; padding: 16px; background-color: #450A0A; border: 1px solid #7F1D1D; border-radius: 8px;",
             )
-            self.current_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 15px; padding: 16px; background-color: #450A0A; border: 1px solid #7F1D1D; border-radius: 8px;")
         self._reset_ui_state()
 
     def _handle_skipped(self, item):
@@ -781,23 +817,23 @@ class MainWindow(QMainWindow):
         dropped = item.get("dropped_seconds", 0)
         max_min = item.get("max_minutes", MAX_RECORDING_MINUTES_DEFAULT)
         logger.warning(f"[UI] Audio truncated at {max_min} min — dropped {dropped}s.")
-        self.current_label.show()
         detail = (
             f" oldest {dropped:.1f}s dropped."
             if dropped > 0
             else " audio beyond this point is being discarded."
         )
-        self.current_label.setText(
-            f"<b>Warning:</b> recording truncated at {max_min} min —{detail}"
+        self._show_current_label(
+            f"<b>Warning:</b> recording truncated at {max_min} min —{detail}",
+            "color: #F59E0B; font-size: 15px; padding: 16px; background-color: #451A03; border: 1px solid #92400E; border-radius: 8px;",
         )
-        self.current_label.setStyleSheet(f"color: {COLOR_WARNING}; font-size: 15px; padding: 16px; background-color: #451A03; border: 1px solid #92400E; border-radius: 8px;")
 
     def _handle_error(self, item):
         err_msg = item.get("message", "Unknown error")
         logger.error(f"[UI] Pipeline error received: {err_msg}")
-        self.current_label.show()
-        self.current_label.setText(f"<b>{err_msg}</b>")
-        self.current_label.setStyleSheet("color: #F87171; font-size: 16px; padding: 16px; background-color: #450A0A; border: 1px solid #7F1D1D; border-radius: 8px;")
+        self._show_current_label(
+            f"<b>{err_msg}</b>",
+            "color: #F87171; font-size: 16px; padding: 16px; background-color: #450A0A; border: 1px solid #7F1D1D; border-radius: 8px;",
+        )
         self.sys_status_label.setText("System Error")
         self.sys_status_label.setStyleSheet(f"color: {COLOR_ERROR}; font-size: 14px; font-weight: 500;")
         self._reset_ui_state(is_error=True)

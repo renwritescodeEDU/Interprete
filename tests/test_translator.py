@@ -1003,5 +1003,108 @@ class TestGlossaryModule(unittest.TestCase):
         self.assertNotIn("DNA", result)
 
 
+class TestNumericalFidelity(unittest.TestCase):
+    """Numerical fidelity in post-processing (Step 4).
+
+    Every integer digit-sequence in the source must be preserved in the
+    translation. Missing numbers are appended as a bracketed note.
+    All checks are deterministic O(n) regex — no LLM calls, no network.
+    """
+
+    def test_no_numbers_unchanged(self):
+        """Source without any digits → translation unchanged."""
+        from src.translator import _ensure_numerical_fidelity
+        result = _ensure_numerical_fidelity(
+            "Hello, how are you?", "Hola, ¿cómo estás?"
+        )
+        self.assertEqual(result, "Hola, ¿cómo estás?")
+
+    def test_all_numbers_present(self):
+        """All source numbers present in translation → unchanged."""
+        from src.translator import _ensure_numerical_fidelity
+        result = _ensure_numerical_fidelity(
+            "I need 53 dollars and 2 cents.",
+            "Necesito 53 dólares y 2 centavos."
+        )
+        self.assertEqual(result, "Necesito 53 dólares y 2 centavos.")
+
+    def test_some_numbers_missing(self):
+        """Missing numbers are appended in a bracketed note."""
+        from src.translator import _ensure_numerical_fidelity
+        result = _ensure_numerical_fidelity(
+            "I need 53 dollars and 2 cents.",
+            "Necesito dólares y centavos."
+        )
+        self.assertIn("[Missing:", result)
+        self.assertIn("53", result)
+        self.assertIn("2", result)
+
+    def test_all_numbers_missing(self):
+        """All source numbers missing → appended."""
+        from src.translator import _ensure_numerical_fidelity
+        result = _ensure_numerical_fidelity(
+            "Call 1-800-555-0199 please.",
+            "Por favor, llame."
+        )
+        self.assertIn("[Missing: 1, 800, 555, 0199]", result)
+
+    def test_missing_number_with_word_boundary(self):
+        """Word-boundary check prevents false match when a number is
+        embedded inside a larger number (e.g. '2' in '12')."""
+        from src.translator import _ensure_numerical_fidelity
+        result = _ensure_numerical_fidelity(
+            "I need 2 pills.",
+            "Necesito 12 pastillas."
+        )
+        # "2" embedded in "12" must not count as present
+        self.assertIn("[Missing: 2]", result)
+
+    def test_currency_format_interaction(self):
+        """After _fix_currency_format converts '$53 with 52 cents' to
+        '$53.52', the numbers 53 and 52 are present in the result, so no
+        [Missing:] note is appended."""
+        from src.translator import _ensure_numerical_fidelity, _fix_currency_format
+        raw = "$53 with 52 cents"
+        formatted = _fix_currency_format(raw)  # "$53.52"
+        self.assertEqual(formatted, "$53.52")
+        result = _ensure_numerical_fidelity(raw, formatted)
+        self.assertEqual(result, formatted)
+
+    def test_integration_via_postprocess_calls_it(self):
+        """_postprocess_translation must invoke _ensure_numerical_fidelity
+        when numbers are missing."""
+        from src.translator import _postprocess_translation
+        result = _postprocess_translation(
+            "I need 53 dollars and 2 cents.",
+            "Necesito dólares y centavos.",
+            "Spanish"
+        )
+        self.assertIn("[Missing:", result, "postprocess must append missing numbers")
+
+    def test_empty_source(self):
+        """Empty source string → no crash."""
+        from src.translator import _ensure_numerical_fidelity
+        result = _ensure_numerical_fidelity("", "Hola")
+        self.assertEqual(result, "Hola")
+
+    def test_source_only_numbers(self):
+        """Source is only digits → translation must preserve them."""
+        from src.translator import _ensure_numerical_fidelity
+        result = _ensure_numerical_fidelity("555", "Marque")
+        self.assertIn("[Missing: 555]", result)
+
+    def test_no_catastrophic_backtracking(self):
+        """Long non-matching input must complete quickly (no ReDoS)."""
+        import time
+        from src.translator import _ensure_numerical_fidelity
+        long_source = "a" * 10000 + " 999"
+        long_target = "b" * 10000 + " cero"
+        start = time.time()
+        result = _ensure_numerical_fidelity(long_source, long_target)
+        elapsed = time.time() - start
+        self.assertLess(elapsed, 0.5, f"Took {elapsed:.3f}s — possible ReDoS")
+        self.assertIn("[Missing: 999]", result)
+
+
 if __name__ == '__main__':
     unittest.main()

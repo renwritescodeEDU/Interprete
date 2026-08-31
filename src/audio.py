@@ -1,14 +1,17 @@
 import multiprocessing
+import os
 import queue
 import time
 import logging
 import fractions
+from collections import deque
 import numpy as np
 import pyaudio
 import scipy.signal
 
 from src.events import ui_error, ui_status, ui_truncated
 from src.queueutil import put_best_effort
+from src.vad import VoiceDetector
 
 # Constants
 CHUNK = 480  # 30ms at 16000Hz
@@ -35,6 +38,12 @@ MIN_AUTO_COMMIT_SECONDS = 3.0
 MIN_SMART_CHUNK_SECONDS = 8.0
 SMART_SILENCE_SECONDS = 0.45
 MAX_SMART_CHUNK_SECONDS = 15.0
+# Audio overlap between consecutive segments (Step 5). The last N seconds
+# of each committed segment are prepended to the next segment's audio as
+# acoustic context for Whisper, preventing the "123 Main St" hallucination
+# caused by prompt-only text chaining. Controlled via the environment
+# variable; set to 0 to disable.
+OVERLAP_SECONDS = float(os.environ.get("INTERPRETE_OVERLAP_SECONDS", "0.7"))
 # Minimum residual audio (seconds) worth pushing as a final AFTER an
 # auto-commit. Without this, a few frames of speech/ambient noise captured
 # between the commit and the Stop click produce a near-empty final; the
@@ -337,11 +346,17 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
     waiting_reported = False
     last_retry = None
 
-    frames = []
+    frames = deque()
     frames_since_last_partial = 0
     partial_start_index = 0
+    total_frames_in_segment = 0
     truncation_reported = False
     truncated_frames = 0
+
+    # Audio overlap between segments (Step 5): the tail of the last committed
+    # segment, kept as float32 at RATE and prepended to the next segment's
+    # FINAL so Whisper gets continuous acoustic context.
+    saved_overlap_audio = np.array([], dtype=np.float32)
 
     recording_start_ts = None
     recording_stop_ts = None
@@ -350,6 +365,12 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
     segment_has_speech = False
     silence_frames = 0
     auto_committed_in_recording = False
+
+    # Voice activity detector: Silero VAD when a local model is available,
+    # otherwise per-frame RMS energy (identical to the pre-VAD behaviour).
+    # The RMS threshold is passed explicitly so the fallback is byte-for-byte
+    # equivalent to SILENCE_RMS_THRESHOLD.
+    voice_detector = VoiceDetector(rms_threshold=SILENCE_RMS_THRESHOLD)
 
     def _try_open_stream():
         """Attempt to (re)open the input stream; returns True on success.
@@ -417,14 +438,19 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                     is_recording = True
                     recording_start_ts = cmd_ts or time.time()
                     recording_stop_ts = None
-                    frames = []
+                    max_frames = int(MAX_RECORDING_MINUTES * 60 * actual_rate / buffer_size)
+                    frames = deque(maxlen=max_frames)
                     frames_since_last_partial = 0
                     partial_start_index = 0
+                    total_frames_in_segment = 0
                     truncation_reported = False
                     truncated_frames = 0
                     segment_has_speech = False
                     silence_frames = 0
                     auto_committed_in_recording = False
+                    # First segment of a session: no overlap context yet.
+                    saved_overlap_audio = np.array([], dtype=np.float32)
+                    voice_detector.reset()
                     logger.info("[AUDIO] Recording started")
                     try:
                         # Flush any stale audio from hardware buffer
@@ -457,7 +483,14 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                                 f"after auto-commit — content already committed."
                             )
                         else:
-                            audio_array = _process_audio_frames(frames, actual_rate)
+                            audio_array = _process_audio_frames(list(frames), actual_rate)
+                            # Prepend saved overlap for acoustic continuity
+                            # (Step 5). The transcriber will trim the overlap
+                            # region so no text is duplicated.
+                            overlap_seconds = len(saved_overlap_audio) / RATE if len(saved_overlap_audio) > 0 else 0.0
+                            if len(saved_overlap_audio) > 0:
+                                audio_array = np.concatenate([saved_overlap_audio, audio_array])
+                            timing["overlap_seconds"] = overlap_seconds
                             _push_final(
                                 asr_queue, final_queue, audio_array, timing,
                                 note=f": {len(frames)} frames ({len(audio_array)} samples, {recording_duration:.2f}s)",
@@ -473,9 +506,10 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                     # else: auto-committed and only trailing silence remains —
                     # nothing left to translate, do not emit a spurious final.
 
-                    frames = []
+                    frames.clear()
                     frames_since_last_partial = 0
                     partial_start_index = 0
+                    total_frames_in_segment = 0
                     is_recording = False
                     recording_start_ts = None
 
@@ -528,13 +562,17 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                     continue
                 frames.append(frame)
                 frames_since_last_partial += 1
+                total_frames_in_segment += 1
 
-                max_frames = int(MAX_RECORDING_MINUTES * 60 * actual_rate / buffer_size)
-                if len(frames) > max_frames:
-                    dropped_frames = len(frames) - max_frames
-                    frames = frames[-max_frames:]
+                # deque(maxlen) drops the oldest frames automatically once the
+                # recording exceeds MAX_RECORDING_MINUTES. Detect the drop via
+                # the total counter so the partial index stays valid and the
+                # truncation is reported exactly once.
+                dropped_frames = total_frames_in_segment - len(frames)
+                if dropped_frames > 0:
                     partial_start_index = max(0, partial_start_index - dropped_frames)
                     truncated_frames += dropped_frames
+                    total_frames_in_segment = len(frames)
                     if not truncation_reported:
                         truncation_reported = True
                         dropped_seconds = round(truncated_frames / actual_rate, 1)
@@ -546,7 +584,7 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
 
                 # Emit a partial transcript periodically
                 if frames_since_last_partial >= partial_threshold and len(frames) > partial_start_index:
-                    partial_frames = frames[partial_start_index:]
+                    partial_frames = list(frames)[partial_start_index:]
                     audio_array = _process_audio_frames(partial_frames, actual_rate)
                     try:
                         asr_queue.put((audio_array, RATE, False), block=False)
@@ -559,9 +597,10 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                 # read. A long run of low-energy frames after speech means the
                 # utterance ended — commit the accumulated audio as a FINAL so
                 # translation starts immediately instead of waiting for Stop.
-                frame_float = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
-                frame_rms = float(np.sqrt(np.mean(np.square(frame_float))))
-                if frame_rms >= SILENCE_RMS_THRESHOLD:
+                # Voice activity detection: Silero VAD when available, RMS
+                # fallback otherwise. Only the sensor changes — the auto-commit
+                # timing logic below is untouched.
+                if voice_detector.is_speech(frame):
                     segment_has_speech = True
                     silence_frames = 0
                 else:
@@ -584,10 +623,17 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                 safety_hit = (segment_has_speech
                               and segment_seconds >= MAX_SMART_CHUNK_SECONDS)
                 if micro_pause_hit or turn_end_hit or safety_hit:
-                    audio_array = _process_audio_frames(frames, actual_rate)
+                    audio_array = _process_audio_frames(list(frames), actual_rate)
+                    # Prepend saved overlap acoustic context (Step 5). The
+                    # transcriber discards the overlap region from the
+                    # transcript so no text is duplicated.
+                    overlap_seconds = len(saved_overlap_audio) / RATE if len(saved_overlap_audio) > 0 else 0.0
+                    if len(saved_overlap_audio) > 0:
+                        audio_array = np.concatenate([saved_overlap_audio, audio_array])
                     commit_timing = {
                         "recording_start": recording_start_ts,
                         "recording_stop": time.time(),
+                        "overlap_seconds": overlap_seconds,
                     }
                     if micro_pause_hit:
                         logger.info(
@@ -605,8 +651,18 @@ def start_audio_capture(asr_queue: multiprocessing.Queue, control_queue: multipr
                         asr_queue, final_queue, audio_array, commit_timing,
                         note=f" (auto-commit): {len(frames)} frames ({len(audio_array)} samples, {segment_seconds:.2f}s)",
                     )
-                    frames = []
+                    # Save the tail of this segment's audio as overlap for the
+                    # next segment. The tail is always taken from the NEW audio
+                    # (auto-commits are >= 3s, so it comfortably exceeds 0.7s).
+                    overlap_samples = int(OVERLAP_SECONDS * RATE)
+                    if overlap_samples > 0 and len(audio_array) > 0:
+                        start = len(audio_array) - overlap_samples
+                        saved_overlap_audio = audio_array[max(0, start):].copy()
+                    else:
+                        saved_overlap_audio = np.array([], dtype=np.float32)
+                    frames.clear()
                     partial_start_index = 0
+                    total_frames_in_segment = 0
                     frames_since_last_partial = 0
                     silence_frames = 0
                     segment_has_speech = False

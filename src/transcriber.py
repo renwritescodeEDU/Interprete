@@ -30,10 +30,22 @@ COMPUTE_TYPE = DEFAULT_WHISPER_COMPUTE
 DEVICE = get_hardware_profile().device
 # Beam size for the FINAL transcription of a recorded utterance.
 BEAM_SIZE = 5
+# CPU beam sizes for long finals (Step 3): the dominant CPU cost of Whisper
+# is beam search on the final chunk of a long recording (observed: 29 s on a
+# single 8.5 s clip). The beam shrinks as the audio grows so stop→display
+# latency stays within budget on CPU.
+BEAM_SIZE_CPU_MEDIUM = 3
+BEAM_SIZE_CPU_LONG = 2
+# Duration thresholds (seconds) for the CPU adaptive beam.
+BEAM_CPU_MEDIUM_SECONDS = 5.0
+BEAM_CPU_LONG_SECONDS = 10.0
 # Beam size for live PARTIAL transcripts. Beam search is the dominant CPU
 # cost; a beam of 1 (greedy) on partials keeps stop→display latency within
 # budget during capture, while finals still get the quality of beam 5.
 BEAM_SIZE_PARTIAL = 1
+# Native capture rate; used as a safe fallback when a chunk arrives without
+# a usable rate value.
+RATE = 16000
 SUPPORTED_LANGUAGES = {"en", "es"}
 TIMEOUT_PUT = 5.0
 TIMEOUT_GET = 1.0
@@ -122,6 +134,61 @@ def _create_model():
         )
         return WhisperModel(MODEL_SIZE, device="cpu", compute_type=COMPUTE_TYPE)
 
+def _join_transcript(segments, overlap_seconds: float) -> str:
+    """Join transcribed segments into text, discarding the overlap window.
+
+    When ``overlap_seconds`` is 0 (or absent), behaves exactly like
+    ``"".join(segment.text ...)`` — the pre-overlap behaviour.
+
+    When an overlap window exists (Step 5), words whose ``end`` timestamp
+    falls at or before ``overlap_seconds`` are the acoustic context prepended
+    from the previous segment and must NOT appear in the transcript (they
+    were already delivered with the previous final). Word-level trimming is
+    used when the model returned word timestamps; otherwise segments that
+    lie entirely inside the window are dropped as a fallback.
+    """
+    if overlap_seconds <= 0:
+        return "".join(segment.text for segment in segments).strip()
+
+    parts = []
+    for segment in segments:
+        words = getattr(segment, "words", None)
+        if isinstance(words, list) and words:
+            kept = [w.word for w in words
+                    if float(getattr(w, "end", 0.0)) > overlap_seconds]
+            parts.extend(kept)
+        else:
+            # No word timestamps: skip segments fully inside the overlap.
+            if float(getattr(segment, "end", 0.0)) > overlap_seconds:
+                parts.append(getattr(segment, "text", ""))
+    return "".join(parts).strip()
+
+
+def _select_beam_size(duration_seconds: float, device: str, is_final: bool) -> int:
+    """Pick the beam size for a transcription call.
+
+    Latency policy (Step 3):
+    - GPU: maximum quality (beam 5) unconditionally — GPU throughput makes
+      the beam cheap, so long clips still transcribe quickly.
+    - CPU: beam shrinks as the audio grows, because beam search is the
+      dominant CPU cost (observed 29 s on a long clip):
+        * duration < 5 s        -> beam 5 (full quality, short clips are cheap)
+        * 5 s <= duration < 10 s -> beam 3 (quality/latency compromise)
+        * duration >= 10 s       -> beam 2 (latency priority)
+    - Partials always use the greedy beam (1) for maximum capture speed;
+      only the FINAL chunk of an utterance gets the quality beam.
+    """
+    if not is_final:
+        return BEAM_SIZE_PARTIAL
+    if device == "cuda":
+        return BEAM_SIZE
+    if duration_seconds < BEAM_CPU_MEDIUM_SECONDS:
+        return BEAM_SIZE
+    if duration_seconds < BEAM_CPU_LONG_SECONDS:
+        return BEAM_SIZE_CPU_MEDIUM
+    return BEAM_SIZE_CPU_LONG
+
+
 def start_transcriber(
     asr_queue: multiprocessing.Queue, translation_queue: multiprocessing.Queue, ui_queue: multiprocessing.Queue,
     final_queue: multiprocessing.Queue = None
@@ -134,6 +201,12 @@ def start_transcriber(
     is processed with priority — it is never queued behind the partial backlog.
     """
     model = _create_model()
+    # Determine the effective device: faster-whisper's WhisperModel exposes
+    # .device, and in tests the model is a mock with a non-string attribute.
+    _cfg = _resolve_whisper_config()
+    _actual_device = getattr(model, "device", None)
+    if not isinstance(_actual_device, str):
+        _actual_device = _cfg.get("device", "cpu")
 
     _send_to_queue(ui_queue, ui_status("transcriber", "ready"))
 
@@ -198,7 +271,6 @@ def start_transcriber(
             # Guard clause: Empty audio
             if audio_data is None or len(audio_data) == 0:
                 if is_final:
-                    detected_language = last_confident_language
                     _send_to_queue(ui_queue, ui_cancel("empty_audio"))
                     logger.warning("[TRANSCRIBER] Final chunk was empty — sent cancel")
                 continue
@@ -213,11 +285,24 @@ def start_transcriber(
             if last_final_text:
                 prompt = f"{TRANSCRIBE_INITIAL_PROMPT}\n{last_final_text}"
 
+            # Adaptive beam size: GPU keeps maximum quality; CPU shrinks the
+            # beam as the audio grows to stay within the 2 s stop→display
+            # latency budget (observed 29 s on a single long clip).
+            duration_seconds = len(audio_data) / rate if rate else len(audio_data) / RATE
+            beam_size = _select_beam_size(duration_seconds, _actual_device, is_final)
+
+            # Audio overlap (Step 5): the tail of the previous segment is
+            # prepended as acoustic context. The overlapping words must be
+            # dropped from the transcript, so request word-level timestamps
+            # when an overlap window is present.
+            overlap_seconds = float(timing.get("overlap_seconds", 0.0) or 0.0)
+
             segments, info = model.transcribe(
                 audio_data,
-                beam_size=BEAM_SIZE if is_final else BEAM_SIZE_PARTIAL,
+                beam_size=beam_size,
                 vad_filter=True,
                 initial_prompt=prompt,
+                word_timestamps=is_final and overlap_seconds > 0,
                 # Whisper hallucination guards: reject output on silence/noise
                 # (compression ratio too high or log-prob too low) and abort
                 # early instead of emitting long garbage loops (observed: a
@@ -264,7 +349,11 @@ def start_transcriber(
                 )
                 detected_language = fallback
 
-            text = "".join(segment.text for segment in segments).strip()
+            # Guard clause: empty audio already handled above. Build the
+            # transcript, dropping any words/segments whose timestamps fall
+            # inside the overlap window (Step 5) so the previous segment's
+            # tail is never duplicated in the output.
+            text = _join_transcript(segments, overlap_seconds)
 
             transcription_end = time.time()
             transcription_elapsed = transcription_end - transcription_start
@@ -274,7 +363,6 @@ def start_transcriber(
             # the only path that cancels a final.
             if not text:
                 if is_final:
-                    detected_language = last_confident_language
                     _send_to_queue(ui_queue, ui_cancel("no_speech"))
                     logger.warning("[TRANSCRIBER] No speech detected in final chunk — sent cancel")
                 continue
@@ -321,11 +409,6 @@ def start_transcriber(
                     _send_to_queue(ui_queue, ui_skipped("queue_full", stage="translation"), block=True, timeout=TIMEOUT_PUT)
                 else:
                     logger.info(f"[TRANSCRIBER] Final queued for translation (lang={detected_language}, {len(text)} chars)")
-
-                # Reset session state for the next recording. Seed the language
-                # prompt with the last confident language so the next detection
-                # starts from a known baseline.
-                detected_language = last_confident_language
 
         except queue.Empty:
             continue

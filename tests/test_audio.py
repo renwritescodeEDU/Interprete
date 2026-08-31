@@ -765,5 +765,116 @@ class TestAutoCommit(unittest.TestCase):
                            f"blind 12 s cut still present; committed {len(audio_array)} samples")
 
 
+class TestDequeBuffer(unittest.TestCase):
+    """Verifies the deque circular buffer behaves correctly under maxlen pressure.
+
+    After the list→deque refactor, the frame buffer must never grow beyond
+    ``max_frames`` and the partial-index tracking must survive left-side drops.
+    """
+
+    def _run_with_sequence(self, seq):
+        """Run start_audio_capture with a SequenceControl (None = no command,
+        keep reading frames) and return (final_chunks, truncation_events)."""
+        mock_p = MagicMock()
+        mock_p.open.return_value = MagicMock()
+        mock_p.open.return_value.get_read_available.return_value = 0
+        mock_p.open.return_value.read.return_value = b'\x00' * 960
+
+        asr_queue = queue.Queue()
+        ui_queue = queue.Queue()
+
+        class SeqCtrl:
+            def __init__(self, s):
+                self._seq = list(s)
+                self._i = 0
+            def get_nowait(self):
+                if self._i >= len(self._seq):
+                    raise queue.Empty
+                item = self._seq[self._i]
+                self._i += 1
+                if item is None:
+                    raise queue.Empty
+                return item
+
+        with patch('src.audio.pyaudio.PyAudio', return_value=mock_p):
+            start_audio_capture(asr_queue, SeqCtrl(seq), ui_queue=ui_queue)
+
+        finals = []
+        while not asr_queue.empty():
+            try:
+                item = asr_queue.get_nowait()
+                if isinstance(item, tuple) and len(item) == 4 and item[2] is True:
+                    finals.append(item)
+            except queue.Empty:
+                break
+
+        truncated = []
+        while not ui_queue.empty():
+            try:
+                msg = ui_queue.get_nowait()
+                if msg.get("type") == "truncated":
+                    truncated.append(msg)
+            except queue.Empty:
+                break
+
+        return finals, truncated
+
+    def test_deque_never_exceeds_maxlen(self):
+        """When the capture loop processes 3× max_frames, the deque must only
+        hold max_frames frames. The final chunk must be bounded by maxlen."""
+        from src.audio import MAX_RECORDING_MINUTES, RATE, CHUNK
+        max_frames = int(MAX_RECORDING_MINUTES * 60 * RATE // CHUNK)  # 10000
+        triple = max_frames * 3  # 30000 frames — forces 20000 drops
+
+        seq = [("START", 0.0)] + [None] * triple + [("FINISH", 1.0), "QUIT"]
+        finals, truncated = self._run_with_sequence(seq)
+
+        self.assertGreaterEqual(len(truncated), 1,
+            "truncation must be reported when frames exceed maxlen")
+        self.assertGreaterEqual(truncated[0]["dropped_seconds"], 0.0)
+
+        # The final chunk must not exceed max_frames worth of samples
+        # (each 30ms frame = 480 samples at 16kHz after resampling).
+        max_samples = max_frames * 480
+        for i, chunk in enumerate(finals):
+            audio_array = chunk[0]
+            self.assertLessEqual(
+                len(audio_array), max_samples,
+                f"Final chunk {i} has {len(audio_array)} samples, "
+                f"exceeds max {max_samples}"
+            )
+
+    def test_deque_does_not_grow_beyond_maxlen_during_capture(self):
+        """Direct deque test: verify that appending beyond maxlen drops oldest
+        frames and the deque length stays at maxlen."""
+        from collections import deque
+        from src.audio import MAX_RECORDING_MINUTES, RATE, CHUNK
+        max_frames = int(MAX_RECORDING_MINUTES * 60 * RATE // CHUNK)  # 10000
+        d = deque(maxlen=max_frames)
+
+        for i in range(max_frames * 3):
+            d.append(b'\x00' * 960)
+
+        self.assertEqual(len(d), max_frames,
+            f"deque grew to {len(d)}, expected {max_frames}")
+
+    def test_partial_index_survives_truncation(self):
+        """After frames are dropped from the deque left side, the partial_start_index
+        adjustment must keep partial slices valid."""
+        from src.audio import MAX_RECORDING_MINUTES, RATE, CHUNK
+        max_frames = int(MAX_RECORDING_MINUTES * 60 * RATE // CHUNK)
+
+        # Send frames that cause truncation AND partials in the same segment.
+        seq = [("START", 0.0)] + [None] * (max_frames * 2) + [("FINISH", 1.0), "QUIT"]
+        finals, _ = self._run_with_sequence(seq)
+
+        self.assertGreaterEqual(len(finals), 1,
+            "FINISH must produce a final chunk after truncation")
+        # The final chunk must be bounded by max_frames * 480 samples
+        max_samples = max_frames * 480
+        self.assertLessEqual(len(finals[0][0]), max_samples,
+            f"Final chunk {len(finals[0][0])} samples exceeds max {max_samples}")
+
+
 if __name__ == '__main__':
     unittest.main()

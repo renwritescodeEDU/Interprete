@@ -593,6 +593,35 @@ def _restore_trailing_english(source: str, translation: str) -> str:
     return f"{translation}, {phrase}.".strip()
 
 
+def _ensure_numerical_fidelity(source: str, target: str) -> str:
+    """Ensure every integer in the source survives into the translation.
+
+    Medical and financial protocols demand that amounts, dosages, dates and
+    phone numbers are never lost. This is a deterministic O(n) check (regex
+    with word boundaries — no nested quantifiers, so no catastrophic
+    backtracking) and performs NO LLM calls, keeping real-time latency.
+
+    Missing numbers are appended at the end as a bracketed note so the
+    interpreter can verify them immediately.
+    """
+    if not source:
+        return target
+    numbers = re.findall(r"\d+", source)
+    if not numbers:
+        return target
+    missing = []
+    seen = set()
+    for num in numbers:
+        if num in seen:
+            continue
+        seen.add(num)
+        if not re.search(rf"\b{re.escape(num)}\b", target):
+            missing.append(num)
+    if not missing:
+        return target
+    return f"{target.strip()} [Missing: {', '.join(missing)}]"
+
+
 def _postprocess_translation(source: str, translation: str, target_lang: str) -> str:
     """Deterministic post-processing: orthography fixes, proper-name
     restoration, and preservation of trailing English phrases."""
@@ -606,6 +635,7 @@ def _postprocess_translation(source: str, translation: str, target_lang: str) ->
     translation = _restore_proper_names(source, translation)
     translation = _restore_trailing_person(source, translation)
     translation = _restore_trailing_english(source, translation)
+    translation = _ensure_numerical_fidelity(source, translation)
     return translation
 
 
